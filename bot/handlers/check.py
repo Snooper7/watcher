@@ -1,43 +1,114 @@
 import logging
 
-from telegram import Update
-from telegram.ext import ContextTypes
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    CallbackQueryHandler,
+    CommandHandler,
+    ConversationHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
+from bot.database.db import save_favorite
 from bot.scrapers.wb_scraper import WbScraper
 
 logger = logging.getLogger(__name__)
 
+BRAND, FILTERS, SAVE_PROMPT = range(3)
+
 _scraper = WbScraper()
 
+_SAVE_KB = InlineKeyboardMarkup([[
+    InlineKeyboardButton("✅ Сохранить", callback_data="fav_save"),
+    InlineKeyboardButton("❌ Нет", callback_data="fav_skip"),
+]])
 
-async def check_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = " ".join(context.args).strip() if context.args else ""
+
+async def _check_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("Введите название производителя:")
+    return BRAND
+
+
+async def _got_brand(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["brand"] = update.message.text.strip()
+    await update.message.reply_text(
+        "Введите фильтры через запятую:\n"
+        "Например: Кроссовки, Размер 42, Белый"
+    )
+    return FILTERS
+
+
+async def _got_filters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    brand = context.user_data.get("brand", "")
+    raw = update.message.text.strip()
+    filter_list = [f.strip() for f in raw.split(",") if f.strip()]
+
     user_id = update.effective_user.id
+    logger.debug("[check] user_id=%s brand=%r filters=%r", user_id, brand, filter_list)
 
-    if not query:
-        await update.message.reply_text(
-            "Использование: /check <название товара>\n"
-            "Пример: /check Nike Air Force 1"
-        )
-        return
+    filters_label = ", ".join(filter_list) if filter_list else "без фильтров"
+    msg = await update.message.reply_text(
+        f"🔍 Ищу *{brand}* ({filters_label})...",
+        parse_mode="Markdown",
+    )
 
-    logger.debug("[check_handler] user_id=%s query=%r", user_id, query)
-
-    msg = await update.message.reply_text(f"🔍 Ищу «{query}» на Wildberries...")
-
-    result = await _scraper.scrape(query)
+    result = await _scraper.scrape_brand_with_filters(brand, filter_list)
 
     if result is None:
-        logger.warning("[check_handler] No result for query=%r user_id=%s", query, user_id)
-        await msg.edit_text(f"😔 Ничего не нашёл по запросу «{query}».")
-        return
+        logger.warning("[check] No result: user_id=%s brand=%r filters=%r", user_id, brand, filter_list)
+        await msg.edit_text("😔 Ничего не нашлось по заданным фильтрам.")
+        return ConversationHandler.END
 
-    price_str = f"{result.price:,.0f} {result.currency}".replace(",", " ") if result.price else "цена не найдена"
-
+    price_str = (
+        f"{result.price:,.0f} {result.currency}".replace(",", " ")
+        if result.price is not None
+        else "цена не найдена"
+    )
     text = (
         f"📦 *{result.name}*\n"
         f"💰 {price_str}\n"
         f"🔗 [Открыть на WB]({result.product_url})"
     )
-    logger.info("[check_handler] Result for user_id=%s: name=%r price=%s", user_id, result.name, result.price)
+    logger.info("[check] user_id=%s name=%r price=%s", user_id, result.name, result.price)
     await msg.edit_text(text, parse_mode="Markdown")
+
+    context.user_data["filters_str"] = raw
+    await update.message.reply_text("Сохранить этот запрос в избранное?", reply_markup=_SAVE_KB)
+    return SAVE_PROMPT
+
+
+async def _on_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q = update.callback_query
+    await q.answer()
+    brand = context.user_data.get("brand", "")
+    filters_str = context.user_data.get("filters_str") or None
+    save_favorite(update.effective_user.id, brand, filters_str)
+    await q.edit_message_text("✅ Запрос сохранён в избранное.")
+    return ConversationHandler.END
+
+
+async def _on_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q = update.callback_query
+    await q.answer()
+    await q.edit_message_text("Хорошо, запрос не сохранён.")
+    return ConversationHandler.END
+
+
+async def _cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("Поиск отменён.")
+    return ConversationHandler.END
+
+
+check_handler = ConversationHandler(
+    entry_points=[CommandHandler("check", _check_start)],
+    states={
+        BRAND: [MessageHandler(filters.TEXT & ~filters.COMMAND, _got_brand)],
+        FILTERS: [MessageHandler(filters.TEXT & ~filters.COMMAND, _got_filters)],
+        SAVE_PROMPT: [
+            CallbackQueryHandler(_on_save, pattern="^fav_save$"),
+            CallbackQueryHandler(_on_skip, pattern="^fav_skip$"),
+        ],
+    },
+    fallbacks=[CommandHandler("cancel", _cancel)],
+)

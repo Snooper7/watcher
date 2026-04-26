@@ -1,7 +1,7 @@
 import logging
 
 from telegram import BotCommand
-from telegram.ext import Application, CommandHandler
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler
 
 from bot.config import Settings
 from bot.database.db import init_db
@@ -29,7 +29,9 @@ def main() -> None:
         await application.bot.set_my_commands([
             BotCommand("start", "Начать работу с ботом"),
             BotCommand("help", "Список команд"),
-            BotCommand("check", "Найти цену товара на WB: /check Nike Air Force 1"),
+            BotCommand("check", "Найти самый дешёвый товар по бренду и фильтрам"),
+            BotCommand("favorites", "Ваши сохранённые запросы"),
+            BotCommand("cancel", "Отменить текущий поиск"),
         ])
         logger.info("[main] Bot commands menu updated")
 
@@ -43,6 +45,7 @@ def _register_handlers(app: Application, settings: Settings) -> None:
     from bot.handlers.start import start_handler
     from bot.handlers.help import help_handler
     from bot.handlers.check import check_handler
+    from bot.handlers.favorites import favorites_handler, run_favorite_callback
 
     app.bot_data["settings"] = settings
 
@@ -52,8 +55,14 @@ def _register_handlers(app: Application, settings: Settings) -> None:
     app.add_handler(CommandHandler("help", help_handler))
     logger.debug("[main] Registered handler: /help")
 
-    app.add_handler(CommandHandler("check", check_handler))
-    logger.debug("[main] Registered handler: /check")
+    app.add_handler(check_handler)
+    logger.debug("[main] Registered handler: /check (ConversationHandler)")
+
+    app.add_handler(CommandHandler("favorites", favorites_handler))
+    logger.debug("[main] Registered handler: /favorites")
+
+    app.add_handler(CallbackQueryHandler(run_favorite_callback, pattern=r"^run_fav:\d+$"))
+    logger.debug("[main] Registered callback: run_fav")
 
     logger.info("[main] All handlers registered")
 

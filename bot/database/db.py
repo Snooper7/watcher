@@ -7,7 +7,9 @@ from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from bot.database.models import Base
+from sqlalchemy import select
+
+from bot.database.models import Base, Favorite
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,37 @@ def init_db(database_url: str) -> Engine:
     logger.info("[init_db] Database initialized. Tables created: %s", tables)
 
     return _engine
+
+
+def save_favorite(telegram_id: int, brand: str, filters: str | None) -> Favorite:
+    with get_session() as session:
+        fav = Favorite(telegram_id=telegram_id, brand=brand, filters=filters)
+        session.add(fav)
+        session.flush()
+        session.expunge(fav)
+        logger.info("[save_favorite] Saved: telegram_id=%s brand=%r", telegram_id, brand)
+        return fav
+
+
+def get_favorites(telegram_id: int) -> list[Favorite]:
+    with get_session() as session:
+        stmt = (
+            select(Favorite)
+            .where(Favorite.telegram_id == telegram_id)
+            .order_by(Favorite.created_at.desc())
+        )
+        favs = list(session.execute(stmt).scalars().all())
+        session.expunge_all()
+        logger.debug("[get_favorites] telegram_id=%s count=%d", telegram_id, len(favs))
+        return favs
+
+
+def get_favorite_by_id(fav_id: int) -> Favorite | None:
+    with get_session() as session:
+        fav = session.get(Favorite, fav_id)
+        if fav is not None:
+            session.expunge(fav)
+        return fav
 
 
 def get_engine() -> Engine:

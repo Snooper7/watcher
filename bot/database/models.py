@@ -70,4 +70,20 @@ class PriceRecord(Base):
         )
 
 
-logger.debug("[models] Registered tables: %s", [User.__tablename__, Product.__tablename__, PriceRecord.__tablename__])
+class Favorite(Base):
+    __tablename__ = "favorites"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    telegram_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    brand: Mapped[str] = mapped_column(String(256), nullable=False)
+    filters: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    def __repr__(self) -> str:
+        return f"<Favorite id={self.id} telegram_id={self.telegram_id} brand={self.brand!r}>"
+
+
+logger.debug(
+    "[models] Registered tables: %s",
+    [User.__tablename__, Product.__tablename__, PriceRecord.__tablename__, Favorite.__tablename__],
+)
