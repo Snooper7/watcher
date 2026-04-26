@@ -23,7 +23,13 @@
       "Read(//d/Develop/AI/**)",
       "Read(//d/Develop/**)",
       "Bash(cp *)",
-      "Bash(git diff *)"
+      "Bash(git diff *)",
+      "Bash(python -m playwright install --help)",
+      "Bash(python -m playwright install chromium --dry-run)",
+      "Bash(python -c \"import playwright; print\\(playwright.__version__\\)\")",
+      "Bash(python -m playwright --version)",
+      "Bash(pip show *)",
+      "Bash(python *)"
     ]
   }
 }

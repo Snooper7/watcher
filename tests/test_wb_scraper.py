@@ -72,7 +72,7 @@ def _make_playwright_mock(
     return mock_async_playwright, mock_page
 
 
-def _make_card(price_text: str, name_text: str, href: str) -> AsyncMock:
+def _make_card(price_text: str, name_text: str, href: str, brand_text: str = "") -> AsyncMock:
     """Build a mock product card element."""
     price_el = AsyncMock()
     price_el.inner_text = AsyncMock(return_value=price_text)
@@ -80,13 +80,18 @@ def _make_card(price_text: str, name_text: str, href: str) -> AsyncMock:
     name_el = AsyncMock()
     name_el.inner_text = AsyncMock(return_value=name_text)
 
+    brand_el = AsyncMock() if brand_text else None
+    if brand_el:
+        brand_el.inner_text = AsyncMock(return_value=brand_text)
+
     link_el = AsyncMock()
     link_el.get_attribute = AsyncMock(return_value=href)
 
     async def _query_selector(selector: str):
         mapping = {
-            ".price-block__final-price": price_el,
+            ".price__lower-price": price_el,
             ".product-card__name": name_el,
+            ".product-card__brand": brand_el,
             ".product-card__link": link_el,
         }
         logger.debug("[mock_card.query_selector] selector=%r", selector)

@@ -1,5 +1,6 @@
 import logging
 
+from telegram import BotCommand
 from telegram.ext import Application, CommandHandler
 
 from bot.config import Settings
@@ -24,6 +25,16 @@ def main() -> None:
 
     _register_handlers(app, settings)
 
+    async def _post_init(application: Application) -> None:
+        await application.bot.set_my_commands([
+            BotCommand("start", "Начать работу с ботом"),
+            BotCommand("help", "Список команд"),
+            BotCommand("check", "Найти цену товара на WB: /check Nike Air Force 1"),
+        ])
+        logger.info("[main] Bot commands menu updated")
+
+    app.post_init = _post_init
+
     logger.info("[main] Starting polling...")
     app.run_polling(drop_pending_updates=True)
 
@@ -31,6 +42,7 @@ def main() -> None:
 def _register_handlers(app: Application, settings: Settings) -> None:
     from bot.handlers.start import start_handler
     from bot.handlers.help import help_handler
+    from bot.handlers.check import check_handler
 
     app.bot_data["settings"] = settings
 
@@ -39,6 +51,9 @@ def _register_handlers(app: Application, settings: Settings) -> None:
 
     app.add_handler(CommandHandler("help", help_handler))
     logger.debug("[main] Registered handler: /help")
+
+    app.add_handler(CommandHandler("check", check_handler))
+    logger.debug("[main] Registered handler: /check")
 
     logger.info("[main] All handlers registered")
 

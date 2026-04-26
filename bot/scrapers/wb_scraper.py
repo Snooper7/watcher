@@ -70,17 +70,19 @@ class WbScraper(BaseScraper):
 
                     first = cards[0]
 
-                    price_el = await first.query_selector(".price-block__final-price")
+                    price_el = await first.query_selector(".price__lower-price")
                     name_el = await first.query_selector(".product-card__name")
+                    brand_el = await first.query_selector(".product-card__brand")
                     link_el = await first.query_selector(".product-card__link")
 
                     raw_price = await price_el.inner_text() if price_el else None
                     raw_name = await name_el.inner_text() if name_el else None
+                    raw_brand = await brand_el.inner_text() if brand_el else None
                     href = await link_el.get_attribute("href") if link_el else None
 
                     logger.debug(
-                        "[WbScraper.scrape] Extracted raw: price=%r, name=%r, href=%r",
-                        raw_price, raw_name, href,
+                        "[WbScraper.scrape] Extracted raw: price=%r, brand=%r, name=%r, href=%r",
+                        raw_price, raw_brand, raw_name, href,
                     )
 
                     price: float | None = None
@@ -92,8 +94,12 @@ class WbScraper(BaseScraper):
 
                     product_url = href if href else search_url
 
+                    clean_name = raw_name.lstrip("/  ").strip() if raw_name else None
+                    name_parts = [p for p in [raw_brand, clean_name] if p]
+                    full_name = " / ".join(name_parts) if name_parts else query
+
                     result = ScrapedProduct(
-                        name=raw_name or query,
+                        name=full_name,
                         price=price,
                         currency="RUB",
                         product_url=product_url,
