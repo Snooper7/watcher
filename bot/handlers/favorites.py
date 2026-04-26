@@ -22,11 +22,14 @@ async def favorites_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         return
 
+    def _fav_label(fav) -> str:
+        if not fav.filters:
+            return fav.brand
+        filters_display = fav.filters if len(fav.filters) <= 40 else fav.filters[:37] + "..."
+        return f"{fav.brand}  |  {filters_display}"
+
     buttons = [
-        [InlineKeyboardButton(
-            f"{fav.brand}" + (f"  |  {fav.filters}" if fav.filters else ""),
-            callback_data=f"run_fav:{fav.id}",
-        )]
+        [InlineKeyboardButton(_fav_label(fav), callback_data=f"run_fav:{fav.id}")]
         for fav in favs
     ]
     keyboard = InlineKeyboardMarkup(buttons)
@@ -45,14 +48,16 @@ async def run_favorite_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     filter_list = [f.strip() for f in fav.filters.split(",") if f.strip()] if fav.filters else []
-    filters_label = fav.filters or "без фильтров"
 
     logger.debug(
         "[run_favorite] fav_id=%s brand=%r filters=%r", fav_id, fav.brand, filter_list
     )
 
+    has_url = any(f.startswith("https://") for f in filter_list)
+    searching_label = "по заданному URL" if has_url else (fav.filters or "без фильтров")
+
     await q.edit_message_text(
-        f"🔍 Ищу *{fav.brand}* ({filters_label})...",
+        f"🔍 Ищу *{fav.brand}* ({searching_label})...",
         parse_mode="Markdown",
     )
 
@@ -74,4 +79,25 @@ async def run_favorite_callback(update: Update, context: ContextTypes.DEFAULT_TY
         f"🔗 [Открыть на WB]({result.product_url})"
     )
     logger.info("[run_favorite] fav_id=%s name=%r price=%s", fav_id, result.name, result.price)
+
+    if result.image_url:
+        msg_deleted = False
+        try:
+            await q.delete_message()
+            msg_deleted = True
+            await context.bot.send_photo(
+                chat_id=q.message.chat_id,
+                photo=result.image_url,
+                caption=text,
+                parse_mode="Markdown",
+            )
+            return
+        except Exception as exc:
+            logger.warning("[run_favorite] Photo send failed: %s", exc)
+            if msg_deleted:
+                await context.bot.send_message(
+                    chat_id=q.message.chat_id, text=text, parse_mode="Markdown"
+                )
+                return
+
     await q.edit_message_text(text, parse_mode="Markdown")

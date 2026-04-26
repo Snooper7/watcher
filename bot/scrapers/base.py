@@ -15,6 +15,7 @@ class ScrapedProduct:
     platform: str
     query: str
     scraped_at: datetime
+    image_url: str | None = None
 
 
 class BaseScraper(ABC):
