@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git init *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git checkout *)",
+      "Skill(aif-implement)",
+      "Bash(python -m venv .venv)",
+      "Bash(py --version)",
+      "Bash(python -m pytest tests/ -v)",
+      "Bash(pip list *)",
+      "Bash(pip install *)",
+      "Bash(timeout 10 python -m bot.main)",
+      "Bash(python -m bot.main)",
+      "Bash(python -c ' *)",
+      "Bash(tasklist)",
+      "Skill(aif-plan)",
+      "Bash(printenv HANDOFF_MODE)",
+      "Bash(printenv HANDOFF_TASK_ID)",
+      "Read(//c/Users/Snooper/.claude/**)",
+      "Bash(python3 *)",
+      "Read(//d/Develop/AI/**)",
+      "Read(//d/Develop/**)",
+      "Bash(cp *)",
+      "Bash(git diff *)"
+    ]
+  }
+}

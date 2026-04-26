@@ -1,0 +1,8 @@
+python-telegram-bot>=20.0
+sqlalchemy>=2.0
+python-dotenv
+playwright
+playwright-stealth
+apscheduler
+pytest
+pytest-asyncio
