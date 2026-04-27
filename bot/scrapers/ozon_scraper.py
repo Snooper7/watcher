@@ -225,8 +225,18 @@ async def _parse_tiles(tab, fallback_url: str) -> list[ScrapedProduct]:
     return results
 
 
-def _cheapest(products: list[ScrapedProduct]) -> ScrapedProduct | None:
+def _cheapest(
+    products: list[ScrapedProduct], brand: str = ""
+) -> ScrapedProduct | None:
     valid = [p for p in products if p.price is not None]
+    if brand:
+        # Keep only products whose name contains all words of the brand query
+        words = brand.lower().split()
+        matched = [p for p in valid if all(w in p.name.lower() for w in words)]
+        if matched:
+            valid = matched
+        else:
+            logger.debug("[_cheapest] No exact brand match for %r, using all results", brand)
     return min(valid, key=lambda p: p.price) if valid else None
 
 
@@ -306,7 +316,7 @@ class OzonScraper(BaseScraper):
                 await _dump_html(tab, "ozon_empty")
                 return None
 
-            cheapest = _cheapest(products)
+            cheapest = _cheapest(products, brand=brand)
             if cheapest:
                 cheapest.query = brand
                 logger.info(

@@ -11,13 +11,15 @@ from telegram.ext import (
 )
 
 from bot.database.db import save_favorite
+from bot.scrapers.ozon_scraper import OzonScraper
 from bot.scrapers.wb_scraper import WbScraper
 
 logger = logging.getLogger(__name__)
 
 BRAND, FILTERS, SAVE_PROMPT = range(3)
 
-_scraper = WbScraper()
+_wb_scraper = WbScraper()
+_ozon_scraper = OzonScraper()
 
 _SAVE_KB = InlineKeyboardMarkup([[
     InlineKeyboardButton("✅ Сохранить", callback_data="fav_save"),
@@ -57,7 +59,9 @@ async def _got_filters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         parse_mode="Markdown",
     )
 
-    result = await _scraper.scrape_brand_with_filters(brand, filter_list)
+    scraper = _ozon_scraper if any("ozon.ru" in f for f in filter_list) else _wb_scraper
+    logger.debug("[check] using scraper=%s", scraper.__class__.__name__)
+    result = await scraper.scrape_brand_with_filters(brand, filter_list)
 
     if result is None:
         logger.warning("[check] No result: user_id=%s brand=%r filters=%r", user_id, brand, filter_list)
@@ -69,10 +73,11 @@ async def _got_filters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         if result.price is not None
         else "цена не найдена"
     )
+    platform_label = "Ozon" if result.platform == "ozon" else "WB"
     text = (
         f"📦 *{result.name}*\n"
         f"💰 {price_str}\n"
-        f"🔗 [Открыть на WB]({result.product_url})"
+        f"🔗 [Открыть на {platform_label}]({result.product_url})"
     )
     logger.info("[check] user_id=%s name=%r price=%s", user_id, result.name, result.price)
     context.user_data["filters_str"] = raw

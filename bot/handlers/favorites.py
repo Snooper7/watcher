@@ -4,11 +4,13 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from bot.database.db import get_favorite_by_id, get_favorites
+from bot.scrapers.ozon_scraper import OzonScraper
 from bot.scrapers.wb_scraper import WbScraper
 
 logger = logging.getLogger(__name__)
 
-_scraper = WbScraper()
+_wb_scraper = WbScraper()
+_ozon_scraper = OzonScraper()
 
 
 async def favorites_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -61,7 +63,9 @@ async def run_favorite_callback(update: Update, context: ContextTypes.DEFAULT_TY
         parse_mode="Markdown",
     )
 
-    result = await _scraper.scrape_brand_with_filters(fav.brand, filter_list)
+    scraper = _ozon_scraper if any("ozon.ru" in f for f in filter_list) else _wb_scraper
+    logger.debug("[run_favorite] using scraper=%s", scraper.__class__.__name__)
+    result = await scraper.scrape_brand_with_filters(fav.brand, filter_list)
 
     if result is None:
         logger.warning("[run_favorite] No result: fav_id=%s brand=%r", fav_id, fav.brand)
@@ -73,10 +77,11 @@ async def run_favorite_callback(update: Update, context: ContextTypes.DEFAULT_TY
         if result.price is not None
         else "цена не найдена"
     )
+    platform_label = "Ozon" if result.platform == "ozon" else "WB"
     text = (
         f"📦 *{result.name}*\n"
         f"💰 {price_str}\n"
-        f"🔗 [Открыть на WB]({result.product_url})"
+        f"🔗 [Открыть на {platform_label}]({result.product_url})"
     )
     logger.info("[run_favorite] fav_id=%s name=%r price=%s", fav_id, result.name, result.price)
 
