@@ -225,18 +225,49 @@ async def _parse_tiles(tab, fallback_url: str) -> list[ScrapedProduct]:
     return results
 
 
+def _weight_from_url(url: str) -> int | None:
+    """Parse weight in grams from Ozon facet filter URL (weight=2000.000;2000.000 → 2000)."""
+    try:
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        raw = qs.get("weight", [""])[0].split(";")[0]
+        return int(float(raw)) if raw else None
+    except (ValueError, IndexError):
+        return None
+
+
+def _matches_weight(product: ScrapedProduct, grams: int) -> bool:
+    """True if the product name or URL contains a weight token matching grams."""
+    kg = grams / 1000
+    haystack = (product.name + " " + (product.product_url or "")).lower()
+    tokens = [str(grams), f"{grams}г", f"{grams}g"]
+    if kg == int(kg):
+        k = int(kg)
+        tokens += [f"{k}кг", f"{k}kg", f"{k} кг", f"{k} kg"]
+    return any(t in haystack for t in tokens)
+
+
 def _cheapest(
-    products: list[ScrapedProduct], brand: str = ""
+    products: list[ScrapedProduct], brand: str = "", weight_g: int | None = None
 ) -> ScrapedProduct | None:
     valid = [p for p in products if p.price is not None]
+
+    # Prefer products matching the weight from the filter URL
+    if weight_g:
+        weight_matched = [p for p in valid if _matches_weight(p, weight_g)]
+        if weight_matched:
+            valid = weight_matched
+        else:
+            logger.debug("[_cheapest] No weight match for %dg, using all results", weight_g)
+
+    # Prefer products whose name contains all words of the brand query
     if brand:
-        # Keep only products whose name contains all words of the brand query
         words = brand.lower().split()
-        matched = [p for p in valid if all(w in p.name.lower() for w in words)]
-        if matched:
-            valid = matched
+        brand_matched = [p for p in valid if all(w in p.name.lower() for w in words)]
+        if brand_matched:
+            valid = brand_matched
         else:
             logger.debug("[_cheapest] No exact brand match for %r, using all results", brand)
+
     return min(valid, key=lambda p: p.price) if valid else None
 
 
@@ -316,7 +347,8 @@ class OzonScraper(BaseScraper):
                 await _dump_html(tab, "ozon_empty")
                 return None
 
-            cheapest = _cheapest(products, brand=brand)
+            weight_g = _weight_from_url(url)
+            cheapest = _cheapest(products, brand=brand, weight_g=weight_g)
             if cheapest:
                 cheapest.query = brand
                 logger.info(

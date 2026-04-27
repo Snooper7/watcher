@@ -4,7 +4,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from bot.scrapers.ozon_scraper import OzonScraper, _parse_price, build_search_url
+from bot.scrapers.ozon_scraper import (
+    OzonScraper, _parse_price, _weight_from_url, _cheapest, build_search_url, ScrapedProduct
+)
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +147,44 @@ async def test_scrape_returns_none_when_prices_never_load() -> None:
 
     logger.debug("[test_scrape_returns_none_when_prices_never_load] result=%s", result)
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _weight_from_url
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("url,expected", [
+    ("https://www.ozon.ru/category/foo/?weight=2000.000%3B2000.000", 2000),
+    ("https://www.ozon.ru/category/foo/?weight=400.000%3B400.000", 400),
+    ("https://www.ozon.ru/search/?text=foo", None),
+])
+def test_weight_from_url(url, expected):
+    assert _weight_from_url(url) == expected
+
+
+# ---------------------------------------------------------------------------
+# _cheapest — weight filtering
+# ---------------------------------------------------------------------------
+
+def _make_product(name, price, url="https://www.ozon.ru/product/x/"):
+    return ScrapedProduct(
+        name=name, price=price, currency="RUB", product_url=url,
+        platform="ozon", query="", scraped_at=datetime.now(tz=timezone.utc),
+    )
+
+
+def test_cheapest_prefers_weight_match():
+    p400 = _make_product("Корм 400г", 500.0, "https://www.ozon.ru/product/foo-400g/")
+    p2000 = _make_product("Корм 2кг", 1800.0, "https://www.ozon.ru/product/foo-2kg/")
+    result = _cheapest([p400, p2000], weight_g=2000)
+    assert result is p2000
+
+
+def test_cheapest_falls_back_when_no_weight_match():
+    p1 = _make_product("Корм без веса А", 300.0)
+    p2 = _make_product("Корм без веса Б", 500.0)
+    result = _cheapest([p1, p2], weight_g=2000)
+    assert result is p1  # no match → cheapest overall
 
 
 # ---------------------------------------------------------------------------
