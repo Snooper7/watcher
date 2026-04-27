@@ -3,7 +3,6 @@ import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from bot.scrapers.ozon_scraper import OzonScraper, _parse_price, build_search_url
 
@@ -40,65 +39,43 @@ def test_parse_price(raw: str, expected: float) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Helpers: build a full playwright mock chain
+# Helpers
 # ---------------------------------------------------------------------------
 
-def _make_playwright_mock(
-    tiles: list,
-    goto_side_effect=None,
-    wait_for_selector_side_effect=None,
-):
-    """Return (mock_async_playwright_fn, mock_page) with the provided tile list."""
-    mock_page = AsyncMock()
-    mock_page.goto = AsyncMock(side_effect=goto_side_effect)
-    mock_page.wait_for_selector = AsyncMock(side_effect=wait_for_selector_side_effect)
-    mock_page.query_selector_all = AsyncMock(return_value=tiles)
+def _make_nodriver_mock(cards: list[dict] | None = None, browser_get_side_effect=None):
+    """
+    Returns (mock_uc_start, mock_tab).
 
-    mock_context = AsyncMock()
-    mock_context.new_page = AsyncMock(return_value=mock_page)
+    The scraper calls tab.evaluate() twice:
+      1. _WAIT_RESULTS_JS  → expects True (widget found)
+      2. _EXTRACT_CARDS_JS → expects list[dict] of card data
+    """
+    from bot.scrapers.ozon_scraper import _WAIT_RESULTS_JS
 
-    mock_browser = AsyncMock()
-    mock_browser.new_context = AsyncMock(return_value=mock_context)
-    mock_browser.close = AsyncMock()
+    mock_tab = AsyncMock()
+    mock_tab.get_content = AsyncMock(return_value="<html></html>")
 
-    mock_p = MagicMock()
-    mock_p.chromium.launch = AsyncMock(return_value=mock_browser)
+    call_count = {"n": 0}
 
-    mock_pw_ctx = AsyncMock()
-    mock_pw_ctx.__aenter__ = AsyncMock(return_value=mock_p)
-    mock_pw_ctx.__aexit__ = AsyncMock(return_value=False)
+    async def _evaluate(js, *args, **kwargs):
+        call_count["n"] += 1
+        if js == _WAIT_RESULTS_JS:
+            logger.debug("[mock_tab.evaluate] call #%d → True (widget found)", call_count["n"])
+            return True
+        # _EXTRACT_CARDS_JS
+        logger.debug("[mock_tab.evaluate] call #%d → cards list", call_count["n"])
+        return cards or []
 
-    mock_async_playwright = MagicMock(return_value=mock_pw_ctx)
-    return mock_async_playwright, mock_page
+    mock_tab.evaluate = _evaluate
 
+    mock_browser = MagicMock()
+    mock_browser.stop = MagicMock()
+    if browser_get_side_effect:
+        mock_browser.get = AsyncMock(side_effect=browser_get_side_effect)
+    else:
+        mock_browser.get = AsyncMock(return_value=mock_tab)
 
-def _make_tile(price_text: str, name_text: str, href: str) -> AsyncMock:
-    """Build a mock Ozon product tile element."""
-    tile = AsyncMock()
-
-    link_el = AsyncMock()
-    link_el.get_attribute = AsyncMock(return_value=href)
-
-    async def _query_selector(selector: str):
-        if "product" in selector:
-            return link_el
-        return None
-
-    tile.query_selector = _query_selector
-
-    # evaluate() is used for price and name extraction via JS
-    async def _evaluate(script: str):
-        logger.debug("[mock_tile.evaluate] script excerpt=%r", script[:60])
-        if "₽" in script or "price" in script.lower():
-            return price_text
-        if "title" in script or "href" in script or "innerText" in script:
-            return name_text
-        if "ozon" in script or "cdn" in script:
-            return None
-        return None
-
-    tile.evaluate = _evaluate
-    return tile
+    return AsyncMock(return_value=mock_browser), mock_tab
 
 
 # ---------------------------------------------------------------------------
@@ -107,16 +84,16 @@ def _make_tile(price_text: str, name_text: str, href: str) -> AsyncMock:
 
 @pytest.mark.asyncio
 async def test_scrape_extracts_first_result() -> None:
-    tile = _make_tile("49 999 ₽", "Nike Air Max", "/product/nike-air-max-123/")
-    mock_pw, _ = _make_playwright_mock(tiles=[tile])
+    cards = [{"price": "49 999 ₽", "productUrl": "https://www.ozon.ru/product/1/", "name": "Nike Air Max", "img": None}]
+    mock_start, _ = _make_nodriver_mock(cards=cards)
 
     scraper = OzonScraper()
     with (
-        patch("bot.scrapers.ozon_scraper.async_playwright", mock_pw),
-        patch("bot.scrapers.ozon_scraper._STEALTH") as mock_stealth,
-        patch("bot.scrapers.ozon_scraper.asyncio.sleep", new_callable=AsyncMock),
+        patch("bot.scrapers.ozon_scraper.uc.start", mock_start),
+        patch("bot.scrapers.ozon_scraper.asyncio.sleep", new=AsyncMock()),
+        patch("bot.scrapers.ozon_scraper._wait_for_results", new=AsyncMock(return_value=True)),
+        patch("bot.scrapers.ozon_scraper._wait_for_prices", new=AsyncMock(return_value=True)),
     ):
-        mock_stealth.apply_stealth_async = AsyncMock()
         result = await scraper.scrape("Nike Air Max")
 
     logger.debug("[test_scrape_extracts_first_result] result=%s", result)
@@ -124,50 +101,64 @@ async def test_scrape_extracts_first_result() -> None:
     assert result.price == 49999.0
     assert result.platform == "ozon"
     assert result.currency == "RUB"
+    assert result.name == "Nike Air Max"
 
 
 # ---------------------------------------------------------------------------
-# OzonScraper.scrape — no results (wait_for_selector timeout)
+# OzonScraper.scrape — no results widget found
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_scrape_returns_none_on_no_results() -> None:
-    mock_pw, _ = _make_playwright_mock(
-        tiles=[],
-        wait_for_selector_side_effect=PlaywrightTimeoutError("timeout"),
-    )
+    mock_start, _ = _make_nodriver_mock(cards=None)
 
     scraper = OzonScraper()
     with (
-        patch("bot.scrapers.ozon_scraper.async_playwright", mock_pw),
-        patch("bot.scrapers.ozon_scraper._STEALTH") as mock_stealth,
-        patch("bot.scrapers.ozon_scraper.asyncio.sleep", new_callable=AsyncMock),
+        patch("bot.scrapers.ozon_scraper.uc.start", mock_start),
+        patch("bot.scrapers.ozon_scraper.asyncio.sleep", new=AsyncMock()),
+        patch("bot.scrapers.ozon_scraper._wait_for_results", new=AsyncMock(return_value=False)),
+        patch("bot.scrapers.ozon_scraper._wait_for_prices", new=AsyncMock(return_value=False)),
     ):
-        mock_stealth.apply_stealth_async = AsyncMock()
-        result = await scraper.scrape("nonexistent product xyz")
+        result = await scraper.scrape("nonexistent product")
 
     logger.debug("[test_scrape_returns_none_on_no_results] result=%s", result)
     assert result is None
 
 
 # ---------------------------------------------------------------------------
-# OzonScraper.scrape — navigation timeout
+# OzonScraper.scrape — prices never appear (headless antibot)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_scrape_returns_none_when_prices_never_load() -> None:
+    mock_start, _ = _make_nodriver_mock(cards=[])
+
+    scraper = OzonScraper()
+    with (
+        patch("bot.scrapers.ozon_scraper.uc.start", mock_start),
+        patch("bot.scrapers.ozon_scraper.asyncio.sleep", new=AsyncMock()),
+        patch("bot.scrapers.ozon_scraper._wait_for_results", new=AsyncMock(return_value=True)),
+        patch("bot.scrapers.ozon_scraper._wait_for_prices", new=AsyncMock(return_value=False)),
+    ):
+        result = await scraper.scrape("hidden product")
+
+    logger.debug("[test_scrape_returns_none_when_prices_never_load] result=%s", result)
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# OzonScraper.scrape — navigation error
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_scrape_returns_none_on_navigation_timeout() -> None:
-    mock_pw, _ = _make_playwright_mock(
-        tiles=[],
-        goto_side_effect=asyncio.TimeoutError("navigation timeout"),
-    )
+    mock_start, _ = _make_nodriver_mock(browser_get_side_effect=Exception("navigation timeout"))
 
     scraper = OzonScraper()
     with (
-        patch("bot.scrapers.ozon_scraper.async_playwright", mock_pw),
-        patch("bot.scrapers.ozon_scraper._STEALTH") as mock_stealth,
-        patch("bot.scrapers.ozon_scraper.asyncio.sleep", new_callable=AsyncMock),
+        patch("bot.scrapers.ozon_scraper.uc.start", mock_start),
+        patch("bot.scrapers.ozon_scraper.asyncio.sleep", new=AsyncMock()),
     ):
-        mock_stealth.apply_stealth_async = AsyncMock()
         result = await scraper.scrape("any product")
 
     logger.debug("[test_scrape_returns_none_on_navigation_timeout] result=%s", result)

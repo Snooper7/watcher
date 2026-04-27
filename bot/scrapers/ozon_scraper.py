@@ -6,8 +6,8 @@ import re
 import urllib.parse
 from datetime import datetime, timezone
 
-from playwright.async_api import TimeoutError as PlaywrightTimeoutError, async_playwright
-from playwright_stealth import Stealth
+import nodriver as uc
+from nodriver import cdp
 
 from bot.database.db import get_session
 from bot.database.models import Platform, PriceRecord, Product
@@ -15,12 +15,107 @@ from bot.scrapers.base import BaseScraper, ScrapedProduct
 
 logger = logging.getLogger(__name__)
 
-_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/124.0.0.0 Safari/537.36"
+# Injected into every new document before page JS runs to hide headless signals
+_STEALTH_JS = """
+try { Object.defineProperty(navigator, 'webdriver', {get: () => undefined}); } catch(e) {}
+if (!window.chrome || !window.chrome.runtime) {
+    window.chrome = Object.assign(window.chrome || {}, {
+        runtime: { onMessage: { addListener: () => {} }, id: undefined },
+        app: { isInstalled: false },
+        csi: () => {},
+        loadTimes: () => {},
+    });
+}
+try {
+    const origQuery = navigator.permissions.query.bind(navigator.permissions);
+    navigator.permissions.query = (p) =>
+        p.name === 'notifications'
+            ? Promise.resolve({ state: Notification.permission })
+            : origQuery(p);
+} catch(e) {}
+"""
+
+# Ozon uses tileGridDesktop on category pages, searchResultsV2 on plain search
+_RESULTS_SELECTORS = [
+    '[data-widget="tileGridDesktop"]',
+    '[data-widget="searchResultsV2"]',
+    '[data-widget="catalogResultsV2"]',
+]
+
+# nodriver's evaluate() runs an EXPRESSION, not a function.
+# Do NOT wrap in () => { ... } — that returns the function object itself.
+
+_EXTRACT_CARDS_JS = """
+Array.from(document.querySelectorAll('[data-index]')).map(tile => {
+    let price = null;
+    for (const s of tile.querySelectorAll('span')) {
+        const t = s.innerText || s.textContent || '';
+        if (/\\d[\\d\\s\\u00a0\\u2009]*[₽﹩]/.test(t)) { price = t.trim(); break; }
+    }
+    if (!price) return null;
+
+    const a = tile.querySelector('a[href*="/product/"]');
+    const href = a ? a.getAttribute('href') : null;
+    const productUrl = href
+        ? (href.startsWith('http') ? href : 'https://www.ozon.ru' + href)
+        : null;
+
+    let name = a ? (a.getAttribute('title') || '').trim() : '';
+    if (!name) {
+        // Search leaf spans across the whole tile (no nested span children).
+        // Leaf spans hold atomic text — avoids picking up badge+name concatenations.
+        const BADGE = /^(осталось|хит|новинка|скидка|акция|топ|распродажа|sale|new|hot)/i;
+        let best = '';
+        for (const sp of tile.querySelectorAll('span')) {
+            if (sp.querySelector('span')) continue; // skip non-leaf spans
+            const t = (sp.innerText || sp.textContent || '').trim();
+            if (t.length > best.length && t.length > 10 &&
+                !/^[0-9]/.test(t) && !/[₽$%]/.test(t) && !BADGE.test(t)) {
+                best = t;
+            }
+        }
+        if (best) name = best;
+    }
+
+    let img = null;
+    for (const i of tile.querySelectorAll('img')) {
+        const src = i.getAttribute('src') || i.getAttribute('data-src') || '';
+        if (src && (src.includes('ozon') || src.includes('cdn'))) { img = src; break; }
+    }
+    return { price, productUrl, name: name || 'Товар', img };
+}).filter(item => item !== null)
+"""
+
+_WAIT_RESULTS_JS = (
+    "["
+    + ", ".join(f'"{s}"' for s in _RESULTS_SELECTORS)
+    + "].some(sel => !!document.querySelector(sel))"
 )
-_STEALTH = Stealth()
+
+# True when at least one price span is visible inside a product tile
+_PRICES_PRESENT_JS = (
+    "Array.from(document.querySelectorAll('[data-index] span')).some(s => "
+    "/\\d[\\d\\s\\u00a0\\u2009]*[\\u20bd﹩]/.test(s.innerText || s.textContent || ''))"
+)
+
+
+def _unwrap_cdp(obj):
+    """Recursively convert nodriver CDP RemoteObject to plain Python value."""
+    if not isinstance(obj, dict) or "type" not in obj:
+        return obj
+    t = obj.get("type")
+    v = obj.get("value")
+    if t in ("string", "number", "boolean"):
+        return v
+    if t == "object" and isinstance(v, list):
+        if v and isinstance(v[0], list) and len(v[0]) == 2:
+            # Object serialised as [[key, val], ...] pairs
+            return {k: _unwrap_cdp(vv) for k, vv in v}
+        # Array serialised as indexed list
+        return [_unwrap_cdp(item) for item in v]
+    if t in ("undefined", "null") or v is None:
+        return None
+    return v
 
 
 def build_search_url(query: str) -> str:
@@ -28,26 +123,23 @@ def build_search_url(query: str) -> str:
 
 
 def _parse_price(raw: str) -> float:
-    """Strip spaces, ₽ and thousands separators from price text, return as float."""
     cleaned = (
         raw.replace("₽", "")
         .replace("₽", "")
         .replace("\xa0", "")
-        .replace(" ", "")
         .replace(" ", "")
-        .replace(" ", "")
+        .replace(" ", "")
+        .replace(" ", "")
         .strip()
     )
-    # Remove remaining non-numeric characters except dot/comma
     cleaned = re.sub(r"[^\d.,]", "", cleaned).replace(",", ".")
     return float(cleaned)
 
 
-async def _dump_html(page, name: str) -> None:
-    """Save page HTML to logs/ for selector debugging."""
+async def _dump_html(tab, name: str) -> None:
     try:
         os.makedirs("logs", exist_ok=True)
-        html = await page.content()
+        html = await tab.get_content()
         path = f"logs/debug_{name}.html"
         with open(path, "w", encoding="utf-8") as f:
             f.write(html)
@@ -56,337 +148,182 @@ async def _dump_html(page, name: str) -> None:
         logger.debug("[_dump_html] Failed: %s", exc)
 
 
-async def _parse_card(tile, fallback_url: str) -> ScrapedProduct | None:
-    """Parse a single Ozon product tile into ScrapedProduct. Returns None if price missing."""
-    # Product link
-    link_el = await tile.query_selector("a[href*='/product/']")
-    href = await link_el.get_attribute("href") if link_el else None
-    if href and href.startswith("/"):
-        product_url = f"https://www.ozon.ru{href}"
-    else:
-        product_url = href or fallback_url
-
-    # Price: find first span whose text matches a price pattern (digits + ₽)
-    raw_price: str | None = await tile.evaluate(
-        """el => {
-            const spans = el.querySelectorAll('span');
-            for (const s of spans) {
-                const t = s.innerText || s.textContent || '';
-                if (/\\d[\\d\\s\\u00a0\\u2009]*[₽₽]/.test(t)) return t.trim();
-            }
-            return null;
-        }"""
-    )
-    logger.debug("[_parse_card] raw_price=%r href=%r", raw_price, href)
-
-    if not raw_price:
-        return None
-
-    try:
-        price = _parse_price(raw_price)
-    except (ValueError, AttributeError):
-        logger.debug("[_parse_card] Failed to parse price from %r", raw_price)
-        return None
-
-    # Product name: text of the product link or nearest heading
-    raw_name: str | None = await tile.evaluate(
-        """el => {
-            const a = el.querySelector('a[href*="/product/"]');
-            if (!a) return null;
-            return a.getAttribute('title') || a.innerText || a.textContent || null;
-        }"""
-    )
-    logger.debug("[_parse_card] raw_name=%r", raw_name)
-    name = (raw_name or "Товар").strip() or "Товар"
-
-    # Image URL: first img with ozon/cdn domain
-    image_url: str | None = await tile.evaluate(
-        """el => {
-            const imgs = el.querySelectorAll('img');
-            for (const img of imgs) {
-                const src = img.getAttribute('src') || img.getAttribute('data-src') || '';
-                if (src && (src.includes('ozon.ru') || src.includes('ozonusercontent') || src.includes('cdn'))) {
-                    return src;
-                }
-            }
-            return null;
-        }"""
-    )
-
-    return ScrapedProduct(
-        name=name,
-        price=price,
-        currency="RUB",
-        product_url=product_url,
-        platform="ozon",
-        query="",
-        scraped_at=datetime.now(tz=timezone.utc),
-        image_url=image_url,
-    )
-
-
-async def _find_cheapest(tiles, fallback_url: str) -> ScrapedProduct | None:
-    """Parse all tiles and return the one with the lowest price."""
-    best: tuple[float, ScrapedProduct] | None = None
-    for tile in tiles:
-        product = await _parse_card(tile, fallback_url)
-        if product is None or product.price is None:
-            continue
-        if best is None or product.price < best[0]:
-            best = (product.price, product)
-    return best[1] if best else None
-
-
-async def _apply_filter(page, filter_text: str) -> bool:
-    """Try to click a filter option on Ozon by text. Returns True if clicked."""
-    scoped_selectors = [
-        "[data-widget='catalogFilters'] button",
-        "[data-widget='searchFilters'] button",
-        "[data-widget='catalogHorizontalFilters'] button",
-        "[data-widget='catalogFilters'] label",
-        "[data-widget='searchFilters'] label",
-    ]
-    for selector in scoped_selectors:
+async def _wait_for_results(tab, timeout: float = 15.0) -> bool:
+    """Poll until any known results widget appears. Returns True if found."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
         try:
-            loc = page.locator(selector).filter(has_text=filter_text)
-            count = await loc.count()
-            if count > 0:
-                await loc.first.click(timeout=3_000)
-                logger.debug("[_apply_filter] Clicked %r via %r", filter_text, selector)
+            found = await tab.evaluate(_WAIT_RESULTS_JS)
+            if found:
+                logger.debug("[_wait_for_results] Results widget found")
                 return True
         except Exception as exc:
-            logger.debug("[_apply_filter] selector=%r filter=%r: %s", selector, filter_text, exc)
-
-    logger.warning("[_apply_filter] Filter not found: %r", filter_text)
-    await _dump_html(page, "ozon_filter")
+            logger.debug("[_wait_for_results] eval error: %s", exc)
+        await asyncio.sleep(0.8)
     return False
 
 
-_VARIANT_SELECTORS = [
-    "[data-widget='webGallery'] button",
-    "[data-widget='webCharacteristics'] button",
-    ".tsBodyControl500Medium",
-    "button[data-widget]",
-]
+async def _wait_for_prices(tab, timeout: float = 10.0) -> bool:
+    """Poll until at least one price span appears inside a product tile."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            found = await tab.evaluate(_PRICES_PRESENT_JS)
+            if found:
+                logger.debug("[_wait_for_prices] Price spans detected")
+                return True
+        except Exception as exc:
+            logger.debug("[_wait_for_prices] eval error: %s", exc)
+        await asyncio.sleep(0.8)
+    return False
 
-_PRODUCT_PRICE_SELECTORS = [
-    "[data-widget='webPrice'] span",
-    "[data-widget='webSale'] span",
-    ".price-block__final-price",
-]
 
-
-async def _resolve_variant(
-    page, product_url: str, filter_items: list[str]
-) -> tuple[str, float | None, str | None]:
-    """Navigate to product page, try to select variant, extract price and image."""
+async def _parse_tiles(tab, fallback_url: str) -> list[ScrapedProduct]:
+    """Run single-pass JS extraction of all product cards."""
     try:
-        await page.goto(product_url, timeout=20_000)
-        await page.wait_for_load_state("networkidle", timeout=15_000)
-        await page.evaluate("window.scrollBy(0, 600)")
-        await asyncio.sleep(1.5)
+        raw_items = await tab.evaluate(_EXTRACT_CARDS_JS)
     except Exception as exc:
-        logger.warning("[_resolve_variant] Failed to load %s: %s", product_url, exc)
-        return product_url, None, None
+        logger.debug("[_parse_tiles] JS evaluation failed: %s", exc)
+        return []
 
-    await _dump_html(page, "ozon_variant")
+    if not raw_items:
+        logger.debug("[_parse_tiles] No items returned by JS")
+        return []
 
-    for filter_text in filter_items:
-        for selector in _VARIANT_SELECTORS:
-            try:
-                item = page.locator(selector).filter(has_text=filter_text)
-                if await item.count() == 0:
-                    continue
-                await item.first.click(timeout=3_000)
-                await asyncio.sleep(1.5)
-                logger.debug("[_resolve_variant] Clicked variant %r via %r", filter_text, selector)
+    # nodriver wraps JS values in CDP RemoteObject format — unwrap recursively
+    raw_items = _unwrap_cdp(raw_items)
+    if not isinstance(raw_items, list):
+        logger.debug("[_parse_tiles] Unexpected JS result type after unwrap: %s", type(raw_items))
+        return []
 
-                for price_sel in _PRODUCT_PRICE_SELECTORS:
-                    price_el = await page.query_selector(price_sel)
-                    if not price_el:
-                        continue
-                    raw = await price_el.inner_text()
-                    try:
-                        price = _parse_price(raw)
-                        image_url = await _page_image_url(page)
-                        logger.debug("[_resolve_variant] price=%s image=%s", price, image_url)
-                        return page.url, price, image_url
-                    except (ValueError, AttributeError):
-                        continue
-                image_url = await _page_image_url(page)
-                return page.url, None, image_url
-            except Exception as exc:
-                logger.debug("[_resolve_variant] selector=%r filter=%r: %s", selector, filter_text, exc)
+    results: list[ScrapedProduct] = []
+    for raw_item in raw_items:
+        item = _unwrap_cdp(raw_item) if isinstance(raw_item, dict) else raw_item
+        if not isinstance(item, dict):
+            continue
+        raw_price = item.get("price") or ""
+        if not raw_price:
+            continue
+        try:
+            price = _parse_price(str(raw_price))
+        except (ValueError, AttributeError):
+            logger.debug("[_parse_tiles] Price parse failed: %r", raw_price)
+            continue
 
-    logger.warning("[_resolve_variant] No matching variant for filters: %r", filter_items)
-    image_url = await _page_image_url(page)
-    return product_url, None, image_url
+        results.append(ScrapedProduct(
+            name=(item.get("name") or "Товар").strip() or "Товар",
+            price=price,
+            currency="RUB",
+            product_url=item.get("productUrl") or fallback_url,
+            platform="ozon",
+            query="",
+            scraped_at=datetime.now(tz=timezone.utc),
+            image_url=item.get("img"),
+        ))
+
+    logger.debug("[_parse_tiles] Parsed %d valid products", len(results))
+    return results
 
 
-async def _page_image_url(page) -> str | None:
-    """Return the first Ozon CDN image URL found on the current page."""
-    try:
-        imgs = await page.query_selector_all("img")
-        for img in imgs:
-            for attr in ("src", "data-src"):
-                src = await img.get_attribute(attr)
-                if src and ("ozon.ru" in src or "ozonusercontent" in src):
-                    logger.debug("[_page_image_url] Found: %s", src)
-                    return src
-    except Exception as exc:
-        logger.debug("[_page_image_url] Failed: %s", exc)
-    return None
+def _cheapest(products: list[ScrapedProduct]) -> ScrapedProduct | None:
+    valid = [p for p in products if p.price is not None]
+    return min(valid, key=lambda p: p.price) if valid else None
 
 
 class OzonScraper(BaseScraper):
     platform = "ozon"
 
     async def scrape(self, query: str) -> ScrapedProduct | None:
-        search_url = build_search_url(query)
-        logger.debug("[OzonScraper.scrape] query=%r url=%s", query, search_url)
-
-        try:
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
-                try:
-                    context = await browser.new_context(user_agent=_USER_AGENT)
-                    page = await context.new_page()
-                    await _STEALTH.apply_stealth_async(page)
-
-                    await asyncio.sleep(random.uniform(1.5, 3.5))
-                    await page.goto(search_url, timeout=30_000)
-
-                    try:
-                        await page.wait_for_selector(
-                            '[data-widget="searchResultsV2"]', timeout=15_000
-                        )
-                    except PlaywrightTimeoutError:
-                        logger.warning("[OzonScraper.scrape] No results container: query=%r", query)
-                        await _dump_html(page, "ozon_search")
-                        return None
-
-                    tiles = await page.query_selector_all(
-                        '[data-widget="searchResultsV2"] [data-index]'
-                    )
-                    logger.debug("[OzonScraper.scrape] Found %d tile(s)", len(tiles))
-
-                    if not tiles:
-                        logger.warning("[OzonScraper.scrape] Empty tiles: query=%r", query)
-                        await _dump_html(page, "ozon_search_empty")
-                        return None
-
-                    product = await _parse_card(tiles[0], search_url)
-                    if product:
-                        product.query = query
-                    logger.info(
-                        "[OzonScraper.scrape] name=%r price=%s",
-                        product and product.name,
-                        product and product.price,
-                    )
-                    return product
-
-                finally:
-                    await browser.close()
-
-        except (asyncio.TimeoutError, PlaywrightTimeoutError) as exc:
-            logger.warning("[OzonScraper.scrape] Timeout: query=%r — %s", query, exc)
-            return None
-        except Exception as exc:
-            logger.error("[OzonScraper.scrape] Error: query=%r — %s", query, exc, exc_info=True)
-            return None
+        url = build_search_url(query)
+        logger.debug("[OzonScraper.scrape] query=%r url=%s", query, url)
+        return await self._run(brand=query, url=url)
 
     async def scrape_brand_with_filters(
         self, brand: str, filter_items: list[str]
     ) -> ScrapedProduct | None:
         direct_url = next(
-            (f.strip() for f in filter_items if f.strip().startswith("https://www.ozon.ru")),
+            (f.strip() for f in filter_items if "ozon.ru" in f.strip()),
             None,
         )
-        search_url = direct_url if direct_url else build_search_url(brand)
-        filters_to_apply = [] if direct_url else filter_items
-
+        url = direct_url if direct_url else build_search_url(brand)
         logger.debug(
-            "[OzonScraper.scrape_brand_with_filters] brand=%r direct_url=%r filters=%r url=%s",
-            brand, bool(direct_url), filter_items, search_url,
+            "[OzonScraper.scrape_brand_with_filters] brand=%r direct_url=%s url=%s",
+            brand, bool(direct_url), url,
         )
+        return await self._run(brand=brand, url=url)
 
+    async def _run(self, brand: str, url: str) -> ScrapedProduct | None:
+        browser = None
         try:
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
-                try:
-                    context = await browser.new_context(user_agent=_USER_AGENT)
-                    page = await context.new_page()
-                    await _STEALTH.apply_stealth_async(page)
-
-                    await asyncio.sleep(random.uniform(1.5, 3.5))
-                    await page.goto(search_url, timeout=30_000)
-
-                    try:
-                        await page.wait_for_selector(
-                            '[data-widget="searchResultsV2"]', timeout=15_000
-                        )
-                    except PlaywrightTimeoutError:
-                        logger.warning(
-                            "[OzonScraper.scrape_brand_with_filters] No products for brand=%r", brand
-                        )
-                        return None
-
-                    for filter_text in filters_to_apply:
-                        applied = await _apply_filter(page, filter_text)
-                        if applied:
-                            await asyncio.sleep(2.0)
-                            try:
-                                await page.wait_for_selector(
-                                    '[data-widget="searchResultsV2"]', timeout=8_000
-                                )
-                            except PlaywrightTimeoutError:
-                                logger.warning(
-                                    "[OzonScraper.scrape_brand_with_filters] No products after filter %r",
-                                    filter_text,
-                                )
-                                return None
-
-                    tiles = await page.query_selector_all(
-                        '[data-widget="searchResultsV2"] [data-index]'
-                    )
-                    logger.debug(
-                        "[OzonScraper.scrape_brand_with_filters] %d tile(s) after filters", len(tiles)
-                    )
-
-                    cheapest = await _find_cheapest(tiles, search_url)
-                    if cheapest is None:
-                        return None
-
-                    if filter_items:
-                        resolved_url, resolved_price, resolved_image = await _resolve_variant(
-                            page, cheapest.product_url, filter_items
-                        )
-                        cheapest.product_url = resolved_url
-                        if resolved_price is not None:
-                            cheapest.price = resolved_price
-                        cheapest.image_url = resolved_image
-
-                    cheapest.query = brand
-                    logger.info(
-                        "[OzonScraper.scrape_brand_with_filters] Cheapest: name=%r price=%s url=%s",
-                        cheapest.name, cheapest.price, cheapest.product_url,
-                    )
-                    return cheapest
-
-                finally:
-                    await browser.close()
-
-        except (asyncio.TimeoutError, PlaywrightTimeoutError) as exc:
-            logger.warning(
-                "[OzonScraper.scrape_brand_with_filters] Timeout: brand=%r — %s", brand, exc
+            browser = await uc.start(
+                browser_args=[
+                    "--headless=new",
+                    "--window-size=1920,1080",
+                    "--lang=ru-RU",
+                    "--disable-blink-features=AutomationControlled",
+                    "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+                ],
+                lang="ru-RU",
             )
-            return None
+            logger.debug("[OzonScraper._run] Browser started, navigating to %s", url)
+
+            # Open blank page first so we can inject the stealth script before Ozon loads
+            tab = await browser.get("about:blank")
+            await tab.send(cdp.page.add_script_to_evaluate_on_new_document(_STEALTH_JS))
+            await tab.get(url)
+            await asyncio.sleep(random.uniform(3.0, 5.0))
+
+            found = await _wait_for_results(tab, timeout=15.0)
+            if not found:
+                logger.warning("[OzonScraper._run] No results widget found: url=%s", url)
+                await _dump_html(tab, "ozon_search")
+                return None
+
+            # Multi-step scroll to trigger lazy-loaded prices in headless mode.
+            # Ozon renders the grid container early but populates price spans only
+            # after tiles enter the viewport via IntersectionObserver.
+            for scroll_y in (600, 1200, 1800):
+                await tab.evaluate(f"window.scrollTo(0, {scroll_y})")
+                await asyncio.sleep(1.2)
+
+            # Scroll back to top so the first tiles are in view again
+            await tab.evaluate("window.scrollTo(0, 0)")
+            await asyncio.sleep(0.8)
+
+            # Wait until at least one price appears (up to 10 s)
+            prices_ready = await _wait_for_prices(tab, timeout=10.0)
+            if not prices_ready:
+                logger.warning(
+                    "[OzonScraper._run] Price spans never appeared in headless mode: url=%s", url
+                )
+                await _dump_html(tab, "ozon_no_prices")
+                return None
+
+            products = await _parse_tiles(tab, url)
+            if not products:
+                logger.warning("[OzonScraper._run] No parseable tiles: url=%s", url)
+                await _dump_html(tab, "ozon_empty")
+                return None
+
+            cheapest = _cheapest(products)
+            if cheapest:
+                cheapest.query = brand
+                logger.info(
+                    "[OzonScraper._run] Result: name=%r price=%s url=%s",
+                    cheapest.name, cheapest.price, cheapest.product_url,
+                )
+            return cheapest
+
         except Exception as exc:
-            logger.error(
-                "[OzonScraper.scrape_brand_with_filters] Error: brand=%r — %s",
-                brand, exc, exc_info=True,
-            )
+            logger.error("[OzonScraper._run] Error: url=%s — %s", url, exc, exc_info=True)
             return None
+        finally:
+            if browser:
+                try:
+                    browser.stop()
+                except Exception:
+                    pass
 
 
 def save_price_record(product_id: int, scraped: ScrapedProduct) -> PriceRecord:
