@@ -225,6 +225,11 @@ async def _parse_tiles(tab, fallback_url: str) -> list[ScrapedProduct]:
     return results
 
 
+_WEIGHT_RE = re.compile(
+    r'(\d+(?:[.,]\d+)?)\s*(кг|kg|г(?!\w)|g(?!\w))', re.IGNORECASE
+)
+
+
 def _weight_from_url(url: str) -> int | None:
     """Parse weight in grams from Ozon facet filter URL (weight=2000.000;2000.000 → 2000)."""
     try:
@@ -235,15 +240,29 @@ def _weight_from_url(url: str) -> int | None:
         return None
 
 
+def _extract_weight_grams(text: str) -> int | None:
+    """Extract the first weight value (in grams) from a text string."""
+    for m in _WEIGHT_RE.finditer(text):
+        val = float(m.group(1).replace(",", "."))
+        unit = m.group(2).lower()
+        return int(val * 1000) if unit in ("кг", "kg") else int(val)
+    return None
+
+
 def _matches_weight(product: ScrapedProduct, grams: int) -> bool:
-    """True if the product name or URL contains a weight token matching grams."""
+    """True if the product name or URL matches the requested weight in grams."""
+    # Prefer extracting weight from the product name (most reliable)
+    w = _extract_weight_grams(product.name)
+    if w is not None:
+        return w == grams
+    # Fall back to token search in the product URL slug
     kg = grams / 1000
-    haystack = (product.name + " " + (product.product_url or "")).lower()
-    tokens = [str(grams), f"{grams}г", f"{grams}g"]
+    url_lower = (product.product_url or "").lower()
+    tokens = [f"{grams}г", f"{grams}g"]
     if kg == int(kg):
         k = int(kg)
-        tokens += [f"{k}кг", f"{k}kg", f"{k} кг", f"{k} kg"]
-    return any(t in haystack for t in tokens)
+        tokens += [f"{k}кг", f"{k}kg"]
+    return any(t in url_lower for t in tokens)
 
 
 def _cheapest(

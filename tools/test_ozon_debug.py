@@ -133,8 +133,26 @@ async def run_headless():
         items = [_unwrap_cdp(i) for i in items]
     count = len(items) if isinstance(items, list) else f"type={type(items)}"
     logger.info("Extracted cards: %s", count)
-    if isinstance(items, list) and items:
-        logger.info("First card: %s", items[0])
+    if isinstance(items, list):
+        from bot.scrapers.ozon_scraper import _weight_from_url, _matches_weight, ScrapedProduct
+        from datetime import datetime, timezone
+        weight_g = _weight_from_url(TEST_URL)
+        logger.info("Weight filter from URL: %s g", weight_g)
+        for i, item in enumerate(items):
+            p = ScrapedProduct(
+                name=item.get("name") or "",
+                price=0,
+                currency="RUB",
+                product_url=item.get("productUrl") or "",
+                platform="ozon",
+                query="",
+                scraped_at=datetime.now(tz=timezone.utc),
+            )
+            match = _matches_weight(p, weight_g) if weight_g else "n/a"
+            logger.info(
+                "  [%02d] price=%-12s weight_match=%-5s name=%s",
+                i, item.get("price"), match, (item.get("name") or "")[:60],
+            )
 
     browser.stop()
 
