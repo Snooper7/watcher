@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import random
@@ -90,6 +91,51 @@ _WAIT_RESULTS_JS = (
     "["
     + ", ".join(f'"{s}"' for s in _RESULTS_SELECTORS)
     + "].some(sel => !!document.querySelector(sel))"
+)
+
+# JS returns a JSON string to bypass CDP object-serialisation quirks.
+# Extracts weight-variant links and current price from an Ozon product page.
+_EXTRACT_VARIANTS_JS = """
+(function() {
+    const variants = [];
+    const widgetSels = [
+        '[data-widget="webSku"]',
+        '[data-widget="webVariant"]',
+        '[data-widget="skuLine"]',
+    ];
+    for (const sel of widgetSels) {
+        const widget = document.querySelector(sel);
+        if (!widget) continue;
+        widget.querySelectorAll('a[href]').forEach(a => {
+            const href = a.getAttribute('href') || '';
+            const text = (a.innerText || a.textContent || '').replace(/\\s+/g, ' ').trim();
+            if (text.length > 0 && text.length < 40)
+                variants.push({
+                    href: href.startsWith('/') ? 'https://www.ozon.ru' + href : href,
+                    text,
+                });
+        });
+        if (variants.length) break;
+    }
+    // Less-strict regex: price may contain extra text ("с картой", etc.)
+    let price = null;
+    const priceWidget = document.querySelector('[data-widget="webPrice"]')
+                     || document.querySelector('[data-widget="price"]');
+    const priceRoot = priceWidget || document;
+    for (const s of priceRoot.querySelectorAll('span')) {
+        const t = (s.innerText || s.textContent || '').trim();
+        if (/\\d[\\d\\s\\u00a0\\u2009]*[₽]/.test(t)) { price = t; break; }
+    }
+    return JSON.stringify({variants, price});
+})()
+"""
+
+# True when a product page has rendered its price (distinct from search-tile check).
+_PRODUCT_PAGE_READY_JS = (
+    "!!document.querySelector('[data-widget=\"webPrice\"]') || "
+    "!!document.querySelector('[data-widget=\"price\"]') || "
+    "Array.from(document.querySelectorAll('span')).some(s => "
+    "/\\d[\\d\\s\\u00a0]*\\s*\\u20bd/.test(s.innerText || s.textContent || ''))"
 )
 
 # True when at least one price span is visible inside a product tile
@@ -225,6 +271,106 @@ async def _parse_tiles(tab, fallback_url: str) -> list[ScrapedProduct]:
     return results
 
 
+async def _wait_for_product_page(tab, timeout: float = 12.0) -> bool:
+    """Poll until a product-page price widget is visible (not search-tile selector)."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            found = await tab.evaluate(_PRODUCT_PAGE_READY_JS)
+            if found:
+                logger.debug("[_wait_for_product_page] price widget found")
+                return True
+        except Exception as exc:
+            logger.debug("[_wait_for_product_page] eval error: %s", exc)
+        await asyncio.sleep(0.8)
+    return False
+
+
+def _parse_variants_json(raw) -> dict:
+    """Unwrap CDP value and JSON-parse the string returned by _EXTRACT_VARIANTS_JS."""
+    if isinstance(raw, dict):
+        raw = _unwrap_cdp(raw)
+    if not isinstance(raw, str):
+        logger.debug("[_parse_variants_json] unexpected type after unwrap: %s", type(raw))
+        return {}
+    try:
+        return json.loads(raw)
+    except Exception as exc:
+        logger.debug("[_parse_variants_json] JSON parse failed: %s — raw=%r", exc, raw[:200])
+        return {}
+
+
+async def _resolve_weight_price(
+    tab, product_url: str, weight_g: int
+) -> float | None:
+    """
+    Navigate to the product page and return the price for the requested weight variant.
+
+    Ozon typically lists each weight as a separate product linked inside the webSku
+    widget.  We navigate to the candidate product, find a variant link whose text
+    matches weight_g, follow that link, and read the price off the variant page.
+    If no matching variant link is found, the current-page price is returned (the
+    weight-filter URL may have already pointed us at the correct weight listing).
+    """
+    logger.debug("[_resolve_weight_price] url=%s weight=%dg", product_url, weight_g)
+    await tab.get(product_url)
+    await asyncio.sleep(random.uniform(2.0, 3.5))
+
+    found = await _wait_for_product_page(tab, timeout=12.0)
+    if not found:
+        logger.warning("[_resolve_weight_price] product page price never appeared: %s", product_url)
+        await _dump_html(tab, "ozon_product_no_price")
+
+    raw = await tab.evaluate(_EXTRACT_VARIANTS_JS)
+    data = _parse_variants_json(raw)
+
+    variants: list = data.get("variants") or []
+    current_price_raw: str | None = data.get("price")
+
+    logger.debug(
+        "[_resolve_weight_price] found %d variant links, current_price=%r",
+        len(variants), current_price_raw,
+    )
+
+    for v in variants:
+        if not isinstance(v, dict):
+            continue
+        w = _extract_weight_grams(v.get("text") or "")
+        logger.debug("[_resolve_weight_price] variant text=%r → weight=%s", v.get("text"), w)
+        if w == weight_g:
+            variant_url = v.get("href") or ""
+            if not variant_url:
+                continue
+            logger.debug("[_resolve_weight_price] following variant url=%s", variant_url)
+            await tab.get(variant_url)
+            await asyncio.sleep(random.uniform(2.0, 3.0))
+            await _wait_for_product_page(tab, timeout=12.0)
+            raw2 = await tab.evaluate(_EXTRACT_VARIANTS_JS)
+            data2 = _parse_variants_json(raw2)
+            price_raw = data2.get("price")
+            logger.debug("[_resolve_weight_price] variant page price=%r", price_raw)
+            if price_raw:
+                try:
+                    return _parse_price(str(price_raw))
+                except (ValueError, AttributeError):
+                    logger.debug("[_resolve_weight_price] price parse failed: %r", price_raw)
+            return None
+
+    # No matching variant link — trust the weight-filter URL to have shown the right product.
+    logger.debug(
+        "[_resolve_weight_price] no variant link for %dg; using current page price %r",
+        weight_g, current_price_raw,
+    )
+    if not current_price_raw:
+        await _dump_html(tab, "ozon_product_no_variant")
+    if current_price_raw:
+        try:
+            return _parse_price(str(current_price_raw))
+        except (ValueError, AttributeError):
+            pass
+    return None
+
+
 _WEIGHT_RE = re.compile(
     r'(\d+(?:[.,]\d+)?)\s*(кг|kg|г(?!\w)|g(?!\w))', re.IGNORECASE
 )
@@ -306,13 +452,29 @@ class OzonScraper(BaseScraper):
             None,
         )
         url = direct_url if direct_url else build_search_url(brand)
-        logger.debug(
-            "[OzonScraper.scrape_brand_with_filters] brand=%r direct_url=%s url=%s",
-            brand, bool(direct_url), url,
-        )
-        return await self._run(brand=brand, url=url)
 
-    async def _run(self, brand: str, url: str) -> ScrapedProduct | None:
+        # If the URL has no weight facet, try to extract weight from text filter items
+        # so the user can pass e.g. "https://...ozon.ru/..., 2кг" and get the right price.
+        weight_hint: int | None = None
+        if not _weight_from_url(url):
+            for f in filter_items:
+                if "ozon.ru" not in f:
+                    w = _extract_weight_grams(f)
+                    if w:
+                        weight_hint = w
+                        logger.debug(
+                            "[OzonScraper.scrape_brand_with_filters] weight hint %dg from filter %r",
+                            w, f,
+                        )
+                        break
+
+        logger.debug(
+            "[OzonScraper.scrape_brand_with_filters] brand=%r direct_url=%s weight_hint=%s url=%s",
+            brand, bool(direct_url), weight_hint, url,
+        )
+        return await self._run(brand=brand, url=url, weight_hint=weight_hint)
+
+    async def _run(self, brand: str, url: str, weight_hint: int | None = None) -> ScrapedProduct | None:
         browser = None
         try:
             browser = await uc.start(
@@ -366,10 +528,24 @@ class OzonScraper(BaseScraper):
                 await _dump_html(tab, "ozon_empty")
                 return None
 
-            weight_g = _weight_from_url(url)
+            weight_g = _weight_from_url(url) or weight_hint
+            # When a weight filter is present, Ozon cards rarely embed the weight in
+            # the product name, so name-based weight matching fails and _cheapest falls
+            # back to the cheapest overall (= lightest variant).  We still run _cheapest
+            # for brand filtering, then verify / correct the price on the product page.
             cheapest = _cheapest(products, brand=brand, weight_g=weight_g)
             if cheapest:
                 cheapest.query = brand
+                if weight_g:
+                    corrected = await _resolve_weight_price(
+                        tab, cheapest.product_url, weight_g
+                    )
+                    if corrected is not None:
+                        logger.info(
+                            "[OzonScraper._run] Price corrected %s→%s for weight=%dg",
+                            cheapest.price, corrected, weight_g,
+                        )
+                        cheapest.price = corrected
                 logger.info(
                     "[OzonScraper._run] Result: name=%r price=%s url=%s",
                     cheapest.name, cheapest.price, cheapest.product_url,
