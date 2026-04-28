@@ -26,6 +26,17 @@ def main() -> None:
     _register_handlers(app, settings)
 
     async def _post_init(application: Application) -> None:
+        from bot.logger import TelegramErrorHandler
+
+        tg_handler = TelegramErrorHandler(
+            bot_token=settings.BOT_TOKEN,
+            chat_id=settings.GROUP_CHAT_ID,
+        )
+        logging.getLogger().addHandler(tg_handler)
+        logger.info(
+            "[main] Telegram error handler activated: chat_id=%s", settings.GROUP_CHAT_ID
+        )
+
         await application.bot.set_my_commands([
             BotCommand("start", "Начать работу с ботом"),
             BotCommand("help", "Список команд"),
