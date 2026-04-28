@@ -3,7 +3,7 @@
 # Usage (as root): bash deploy/setup.sh
 set -euo pipefail
 
-REPO_URL="https://github.com/YOUR_USERNAME/whatcher.git"
+REPO_URL="https://github.com/Snooper7/watcher.git"
 INSTALL_DIR="/opt/whatcher"
 SERVICE_USER="whatcher"
 PYTHON="python3"
