@@ -1,0 +1,13 @@
+# Normalize line endings
+* text=auto
+
+# Shell scripts and configs must always have LF (Unix line endings)
+*.sh    text eol=lf
+*.service text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+Makefile text eol=lf
+
+# Windows-only files (if any)
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
