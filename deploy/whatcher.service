@@ -1,0 +1,19 @@
+[Unit]
+Description=Whatcher — Telegram price monitoring bot
+After=network.target
+
+[Service]
+Type=simple
+User=whatcher
+Group=whatcher
+WorkingDirectory=/opt/whatcher
+EnvironmentFile=/opt/whatcher/.env
+ExecStart=/opt/whatcher/venv/bin/python -m bot.main
+Restart=on-failure
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=whatcher
+
+[Install]
+WantedBy=multi-user.target
