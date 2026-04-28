@@ -49,6 +49,8 @@ class TelegramErrorHandler(logging.Handler):
         message = self.format(record)
         # Telegram HTML allows <b> tags; strip problematic characters from message body
         body = message.replace("<", "&lt;").replace(">", "&gt;")
+        if len(body) > 3800:
+            body = body[:3800] + "\n…[truncated]"
         return f"{header}\n{body}"
 
 

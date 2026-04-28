@@ -15,5 +15,12 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=whatcher
 
+# Hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/whatcher/data /opt/whatcher/logs
+CapabilityBoundingSet=
+
 [Install]
 WantedBy=multi-user.target
