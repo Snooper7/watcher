@@ -33,7 +33,8 @@
       "Bash(xargs grep *)",
       "Bash(git -C D:/Develop/AI/whatcher diff --stat)",
       "Bash(git -C D:/Develop/AI/whatcher status --short)",
-      "Bash(git *)"
+      "Bash(git *)",
+      "Skill(aif-commit)"
     ]
   }
 }
