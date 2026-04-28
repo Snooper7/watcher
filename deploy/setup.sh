@@ -21,6 +21,14 @@ apt-get update -qq
 step 2 "Install system dependencies"
 apt-get install -y --no-install-recommends \
     python3 python3-venv python3-pip git curl ca-certificates
+# Chromium for nodriver (package name differs across Ubuntu versions)
+if apt-get install -y --no-install-recommends chromium-browser 2>/dev/null; then
+    echo "Installed chromium-browser (system fallback for Ozon scraper)"
+elif apt-get install -y --no-install-recommends chromium 2>/dev/null; then
+    echo "Installed chromium (system fallback for Ozon scraper)"
+else
+    echo "System Chromium not available — Playwright browser cache will be used instead"
+fi
 
 step 3 "Create system user '$SERVICE_USER'"
 if ! id "$SERVICE_USER" &>/dev/null; then

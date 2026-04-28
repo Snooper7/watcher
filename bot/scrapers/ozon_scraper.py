@@ -1,4 +1,5 @@
 import asyncio
+import glob
 import json
 import logging
 import os
@@ -13,6 +14,31 @@ from nodriver import cdp
 from bot.scrapers.base import BaseScraper, ScrapedProduct
 
 logger = logging.getLogger(__name__)
+
+
+def _find_chromium_path() -> str | None:
+    """Return a Chrome/Chromium executable path for nodriver.
+
+    Priority:
+    1. CHROME_EXECUTABLE_PATH env var (explicit override)
+    2. Playwright's Chromium installed in the current user's cache
+    3. None — nodriver will search system PATH itself
+    """
+    env_path = os.getenv("CHROME_EXECUTABLE_PATH")
+    if env_path and os.path.isfile(env_path):
+        logger.debug("[OzonScraper] Using Chrome from CHROME_EXECUTABLE_PATH: %s", env_path)
+        return env_path
+
+    home = os.path.expanduser("~")
+    pattern = os.path.join(home, ".cache", "ms-playwright", "chromium-*", "chrome-linux", "chrome")
+    matches = glob.glob(pattern)
+    if matches:
+        path = sorted(matches)[-1]
+        logger.debug("[OzonScraper] Using Playwright Chromium: %s", path)
+        return path
+
+    logger.debug("[OzonScraper] No explicit Chromium found; nodriver will search system PATH")
+    return None
 
 # Injected into every new document before page JS runs to hide headless signals
 _STEALTH_JS = """
@@ -475,7 +501,8 @@ class OzonScraper(BaseScraper):
     async def _run(self, brand: str, url: str, weight_hint: int | None = None) -> ScrapedProduct | None:
         browser = None
         try:
-            browser = await uc.start(
+            chromium_path = _find_chromium_path()
+            start_kwargs: dict = dict(
                 browser_args=[
                     "--headless=new",
                     "--window-size=1920,1080",
@@ -486,6 +513,9 @@ class OzonScraper(BaseScraper):
                 ],
                 lang="ru-RU",
             )
+            if chromium_path:
+                start_kwargs["browser_executable_path"] = chromium_path
+            browser = await uc.start(**start_kwargs)
             logger.debug("[OzonScraper._run] Browser started, navigating to %s", url)
 
             # Open blank page first so we can inject the stealth script before Ozon loads
