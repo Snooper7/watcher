@@ -36,9 +36,17 @@ def format_price_report(rows: list[tuple[Product, PriceRecord]]) -> str:
         product = entry["product"]
         lines.append(f"{i}. *{product.name}*")
         if entry["wb"] is not None:
-            lines.append(f"   \U0001f6d2 WB: {_fmt_price(entry['wb'])}")
+            price_text = f"\U0001f6d2 WB: {_fmt_price(entry['wb'])}"
+            if product.wb_url:
+                lines.append(f"   [{price_text}]({product.wb_url})")
+            else:
+                lines.append(f"   {price_text}")
         if entry["ozon"] is not None:
-            lines.append(f"   \U0001f6cd Ozon: {_fmt_price(entry['ozon'])}")
+            price_text = f"\U0001f6cd Ozon: {_fmt_price(entry['ozon'])}"
+            if product.ozon_url:
+                lines.append(f"   [{price_text}]({product.ozon_url})")
+            else:
+                lines.append(f"   {price_text}")
 
     lines.append(f"\nОбновлено: {len(grouped)} товаров")
     return "\n".join(lines)
