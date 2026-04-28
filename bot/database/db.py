@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from sqlalchemy import select
 
-from bot.database.models import Base, Favorite
+from bot.database.models import Base, Favorite, Product, User
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,80 @@ def get_favorite_by_id(fav_id: int) -> Favorite | None:
         if fav is not None:
             session.expunge(fav)
         return fav
+
+
+def get_or_create_user(telegram_id: int, username: str | None) -> User:
+    with get_session() as session:
+        logger.debug("[get_or_create_user] telegram_id=%s username=%r", telegram_id, username)
+        stmt = select(User).where(User.telegram_id == telegram_id)
+        user = session.execute(stmt).scalars().first()
+        if user is not None:
+            logger.debug("[get_or_create_user] found existing user id=%s", user.id)
+            session.expunge(user)
+            return user
+        user = User(telegram_id=telegram_id, username=username)
+        session.add(user)
+        session.flush()
+        session.expunge(user)
+        logger.info("[get_or_create_user] created new user id=%s telegram_id=%s", user.id, telegram_id)
+        return user
+
+
+def add_product(
+    user_id: int,
+    name: str,
+    wb_url: str | None = None,
+    ozon_url: str | None = None,
+) -> Product:
+    with get_session() as session:
+        logger.debug(
+            "[add_product] user_id=%s name=%r wb_url=%r ozon_url=%r",
+            user_id, name, wb_url, ozon_url,
+        )
+        product = Product(user_id=user_id, name=name, wb_url=wb_url, ozon_url=ozon_url)
+        session.add(product)
+        session.flush()
+        session.expunge(product)
+        logger.info("[add_product] saved product id=%s name=%r user_id=%s", product.id, name, user_id)
+        return product
+
+
+def list_products(user_id: int) -> list[Product]:
+    with get_session() as session:
+        logger.debug("[list_products] user_id=%s", user_id)
+        stmt = (
+            select(Product)
+            .where(Product.user_id == user_id)
+            .order_by(Product.added_at.desc())
+        )
+        products = list(session.execute(stmt).scalars().all())
+        session.expunge_all()
+        logger.debug("[list_products] user_id=%s count=%d", user_id, len(products))
+        return products
+
+
+def get_product_by_id(product_id: int) -> Product | None:
+    with get_session() as session:
+        logger.debug("[get_product_by_id] product_id=%s", product_id)
+        product = session.get(Product, product_id)
+        if product is not None:
+            session.expunge(product)
+            logger.debug("[get_product_by_id] found product id=%s name=%r", product.id, product.name)
+        else:
+            logger.debug("[get_product_by_id] product_id=%s not found", product_id)
+        return product
+
+
+def remove_product(product_id: int) -> None:
+    with get_session() as session:
+        logger.debug("[remove_product] product_id=%s", product_id)
+        product = session.get(Product, product_id)
+        if product is None:
+            logger.warning("[remove_product] product_id=%s not found, skipping", product_id)
+            return
+        name = product.name
+        session.delete(product)
+        logger.info("[remove_product] deleted product id=%s name=%r", product_id, name)
 
 
 def get_engine() -> Engine:

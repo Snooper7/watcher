@@ -29,7 +29,11 @@
       "Bash(python -c \"import playwright; print\\(playwright.__version__\\)\")",
       "Bash(python -m playwright --version)",
       "Bash(pip show *)",
-      "Bash(python *)"
+      "Bash(python *)",
+      "Bash(xargs grep *)",
+      "Bash(git -C D:/Develop/AI/whatcher diff --stat)",
+      "Bash(git -C D:/Develop/AI/whatcher status --short)",
+      "Bash(git *)"
     ]
   }
 }

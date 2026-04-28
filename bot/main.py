@@ -31,6 +31,9 @@ def main() -> None:
             BotCommand("help", "Список команд"),
             BotCommand("check", "Найти самый дешёвый товар по бренду и фильтрам"),
             BotCommand("favorites", "Ваши сохранённые запросы"),
+            BotCommand("add", "Добавить товар в список мониторинга"),
+            BotCommand("list", "Показать список товаров"),
+            BotCommand("remove", "Удалить товар из списка"),
             BotCommand("cancel", "Отменить текущий поиск"),
         ])
         logger.info("[main] Bot commands menu updated")
@@ -46,6 +49,12 @@ def _register_handlers(app: Application, settings: Settings) -> None:
     from bot.handlers.help import help_handler
     from bot.handlers.check import check_handler
     from bot.handlers.favorites import favorites_handler, run_favorite_callback
+    from bot.handlers.products import (
+        add_handler,
+        list_products_handler,
+        remove_handler,
+        remove_product_callback,
+    )
 
     app.bot_data["settings"] = settings
 
@@ -63,6 +72,18 @@ def _register_handlers(app: Application, settings: Settings) -> None:
 
     app.add_handler(CallbackQueryHandler(run_favorite_callback, pattern=r"^run_fav:\d+$"))
     logger.debug("[main] Registered callback: run_fav")
+
+    app.add_handler(add_handler)
+    logger.debug("[main] Registered handler: /add (ConversationHandler)")
+
+    app.add_handler(CommandHandler("list", list_products_handler))
+    logger.debug("[main] Registered handler: /list")
+
+    app.add_handler(CommandHandler("remove", remove_handler))
+    logger.debug("[main] Registered handler: /remove")
+
+    app.add_handler(CallbackQueryHandler(remove_product_callback, pattern=r"^rm_prod:\d+$"))
+    logger.debug("[main] Registered callback: rm_prod")
 
     logger.info("[main] All handlers registered")
 

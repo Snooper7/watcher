@@ -3,6 +3,7 @@ sqlalchemy>=2.0
 python-dotenv
 playwright
 playwright-stealth
+nodriver
 apscheduler
 pytest
 pytest-asyncio
