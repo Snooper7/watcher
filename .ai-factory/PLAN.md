@@ -1,74 +1,57 @@
-# Планировщик и автоматический сбор цен
+# Групповые отчёты
 
 **Дата:** 2026-04-28  
 **Ветка:** feature/ozon-scraper (текущая)
 
 ## Settings
 
-- **Testing:** да — unit-тесты для планировщика и DB-функций
-- **Logging:** verbose — детальные DEBUG-логи на каждый продукт
+- **Testing:** да — unit-тесты для форматтера и DB-функции
+- **Logging:** verbose — детальные DEBUG-логи
 - **Docs:** нет обязательного чекпоинта
 
 ## Roadmap Linkage
 
-**Milestone:** "Планировщик и автоматический сбор цен"  
-**Rationale:** Прямая реализация следующего пункта роадмапа — cron-задача 7:00/13:00/20:00, обход продуктов, запись PriceRecord.
+**Milestone:** "Групповые отчёты"  
+**Rationale:** Прямая реализация следующего пункта роадмапа — отправка отчёта с ценами в GROUP_CHAT_ID по расписанию CHECK_TIMES.
 
 ## Контекст
 
-APScheduler уже есть в `requirements.txt`, но не подключён. `CHECK_TIMES` определён в `bot/config.py`, но не используется. Модели `Product` и `PriceRecord` готовы. Скраперы (`OzonScraper`, `WbScraper`) имеют `scrape_brand_with_filters()`. `save_price_record()` сейчас дублируется в каждом скрапере — нужно централизовать.
+`GROUP_CHAT_ID` уже определён в `Settings`. Планировщик (`bot/scheduler.py`) запускает `collect_prices` по расписанию. `PriceRecord` хранит цену, платформу и `checked_at`. Нужно: добавить DB-запрос для последних цен, создать форматтер отчёта, подключить отправку к тому же расписанию.
 
 ## Задачи
 
 ### Фаза 1 — Слой данных
 
-**Задача 1: Добавить DB-функции для планировщика** (`bot/database/db.py`)
+**Задача 5: Добавить `get_latest_price_records()`** (`bot/database/db.py`)
 
-- `list_all_products_with_urls() -> list[Product]` — все Product где `wb_url IS NOT NULL OR ozon_url IS NOT NULL`
-- `save_price_record(product_id, scraped: ScrapedProduct) -> PriceRecord` — централизованная запись (убрать дубли из скраперов)
-- DEBUG-логи: кол-во найденных продуктов, записанный price/platform
+- Возвращает `list[tuple[Product, PriceRecord]]` — одна строка на пару (product, platform), запись с максимальным `checked_at`
+- Реализация через subquery: `SELECT product_id, platform, MAX(checked_at) GROUP BY product_id, platform`, затем JOIN
+- DEBUG-лог: кол-во строк
 
-### Фаза 2 — Планировщик
+### Фаза 2 — Репортер
 
-**Задача 2: Создать `bot/scheduler.py`** (блокируется Задачей 1)
+**Задача 6: Создать `bot/reporter.py`** (блокируется Задачей 5)
 
-```
-async def collect_prices(app) -> None
-```
+- `format_price_report(rows) -> str` — группирует по product.id, форматирует список с иконками WB/Ozon и ценами
+- `send_group_report(app) -> None` — запрашивает данные, форматирует, отправляет в `GROUP_CHAT_ID`
+- try/except на отправку — ошибка логируется, не поднимается
 
-- Вызывает `list_all_products_with_urls()`
-- Для каждого: определяет платформу → вызывает `OzonScraper` или `WbScraper`
-- Сохраняет через `save_price_record()`
-- try/except per product — ошибка одного не останавливает обход
-- DEBUG на каждый продукт: `product_id`, `platform`, `price`, время выполнения
-- INFO итог: `N продуктов проверено, M записей сохранено, K ошибок`
+**Задача 7: Обновить `bot/scheduler.py`** (блокируется Задачей 6)
 
-**Задача 3: Интегрировать APScheduler в `bot/main.py`** (блокируется Задачей 2)
-
-- `setup_scheduler(app, settings) -> AsyncIOScheduler`
-- Парсит `settings.CHECK_TIMES` (`"7:00,13:00,20:00"`)
-- Добавляет `CronTrigger` на каждое время
-- `scheduler.start()` / `scheduler.shutdown()` в жизненном цикле бота
-- INFO при старте: расписание и кол-во продуктов в мониторинге
+- Добавить `collect_and_report(app)` — вызывает `collect_prices` затем `send_group_report`
+- В `setup_scheduler()` регистрировать `collect_and_report` вместо `collect_prices`
 
 ### Фаза 3 — Тесты
 
-**Задача 4: Написать тесты** (блокируется Задачами 1 и 2)
+**Задача 8: Написать тесты** (блокируется Задачами 5 и 6)
 
-`tests/test_scheduler.py`:
-- `test_collect_prices_calls_correct_scraper` — Ozon-продукт → OzonScraper, WB-продукт → WbScraper
-- `test_collect_prices_saves_price_record` — результат скрапера записан в БД
-- `test_collect_prices_continues_on_error` — исключение по одному продукту не останавливает остальные
-- `test_collect_prices_skips_product_without_url` — продукт без URL не передаётся в скрапер
+`tests/test_reporter.py`:
+- `test_format_price_report_empty`
+- `test_format_price_report_ozon_only`
+- `test_format_price_report_wb_only`
+- `test_format_price_report_both_platforms`
+- `test_send_group_report_calls_send_message`
+- `test_send_group_report_handles_send_error`
 
 `tests/test_products_db.py` (дополнить):
-- `test_list_all_products_with_urls` — возвращает только продукты с URL
-- `test_save_price_record_creates_record` — запись появляется в БД с правильными полями
-
-## Commit Plan
-
-| Коммит | Задачи | Сообщение |
-|--------|--------|-----------|
-| 1 | 1 | `feat(db): add list_all_products_with_urls and centralise save_price_record` |
-| 2 | 2, 3 | `feat(scheduler): add APScheduler price collection job wired to CHECK_TIMES` |
-| 3 | 4 | `test(scheduler): add unit tests for scheduler job and DB functions` |
+- `test_get_latest_price_records_returns_latest_per_platform`

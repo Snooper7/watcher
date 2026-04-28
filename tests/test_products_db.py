@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import bot.database.db as db_module
 from bot.database.db import (
     add_product,
+    get_latest_price_records,
     get_or_create_user,
     get_product_by_id,
     init_db,
@@ -201,3 +202,38 @@ def test_save_price_record_wb():
 
     assert record.platform == Platform.wb
     assert record.price == 799.0
+
+
+def test_get_latest_price_records_returns_latest_per_platform():
+    user = get_or_create_user(950, None)
+    product = add_product(user.id, "Price History Product", ozon_url="https://ozon.ru/product/99")
+
+    old_scraped = ScrapedProduct(
+        name="Price History Product",
+        price=1000.0,
+        currency="RUB",
+        product_url="https://ozon.ru/product/99",
+        platform="ozon",
+        query="test",
+        scraped_at=datetime(2026, 1, 1, 7, 0, 0, tzinfo=timezone.utc),
+    )
+    new_scraped = ScrapedProduct(
+        name="Price History Product",
+        price=900.0,
+        currency="RUB",
+        product_url="https://ozon.ru/product/99",
+        platform="ozon",
+        query="test",
+        scraped_at=datetime(2026, 1, 1, 13, 0, 0, tzinfo=timezone.utc),
+    )
+    save_price_record(product.id, old_scraped)
+    save_price_record(product.id, new_scraped)
+
+    rows = get_latest_price_records()
+    logger.debug("[test] get_latest_price_records rows=%d", len(rows))
+
+    assert len(rows) == 1
+    returned_product, returned_record = rows[0]
+    assert returned_product.id == product.id
+    assert returned_record.price == 900.0
+    assert returned_record.platform == Platform.ozon

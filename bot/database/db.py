@@ -3,7 +3,7 @@ import os
 from contextlib import contextmanager
 from typing import Generator
 
-from sqlalchemy import create_engine, inspect, select, text
+from sqlalchemy import create_engine, func, inspect, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -196,6 +196,34 @@ def save_price_record(product_id: int, scraped: ScrapedProduct) -> PriceRecord:
             record_id, scraped.price, platform.value,
         )
         return record
+
+
+def get_latest_price_records() -> list[tuple[Product, PriceRecord]]:
+    with get_session() as session:
+        subq = (
+            select(
+                PriceRecord.product_id,
+                PriceRecord.platform,
+                func.max(PriceRecord.id).label("max_id"),
+            )
+            .group_by(PriceRecord.product_id, PriceRecord.platform)
+            .subquery()
+        )
+        stmt = (
+            select(Product, PriceRecord)
+            .join(PriceRecord, PriceRecord.product_id == Product.id)
+            .join(
+                subq,
+                (PriceRecord.product_id == subq.c.product_id)
+                & (PriceRecord.platform == subq.c.platform)
+                & (PriceRecord.id == subq.c.max_id),
+            )
+            .order_by(Product.id)
+        )
+        rows = [(product, record) for product, record in session.execute(stmt).all()]
+        session.expunge_all()
+        logger.debug("[get_latest_price_records] count=%d", len(rows))
+        return rows
 
 
 def get_engine() -> Engine:

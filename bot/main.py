@@ -34,6 +34,7 @@ def main() -> None:
             BotCommand("add", "Добавить товар в список мониторинга"),
             BotCommand("list", "Показать список товаров"),
             BotCommand("remove", "Удалить товар из списка"),
+            BotCommand("monitoring", "Запустить мониторинг цен вручную"),
             BotCommand("cancel", "Отменить текущий поиск"),
         ])
         logger.info("[main] Bot commands menu updated")
@@ -62,6 +63,7 @@ def _register_handlers(app: Application, settings: Settings) -> None:
     from bot.handlers.help import help_handler
     from bot.handlers.check import check_handler
     from bot.handlers.favorites import favorites_handler, run_favorite_callback
+    from bot.handlers.monitoring import monitoring_handler
     from bot.handlers.products import (
         add_handler,
         list_products_handler,
@@ -91,6 +93,9 @@ def _register_handlers(app: Application, settings: Settings) -> None:
 
     app.add_handler(CommandHandler("list", list_products_handler))
     logger.debug("[main] Registered handler: /list")
+
+    app.add_handler(CommandHandler("monitoring", monitoring_handler))
+    logger.debug("[main] Registered handler: /monitoring")
 
     app.add_handler(CommandHandler("remove", remove_handler))
     logger.debug("[main] Registered handler: /remove")

@@ -7,6 +7,7 @@ from telegram.ext import Application
 
 from bot.config import Settings
 from bot.database.db import list_all_products_with_urls, save_price_record
+from bot.reporter import send_group_report
 from bot.scrapers.ozon_scraper import OzonScraper
 from bot.scrapers.wb_scraper import WbScraper
 
@@ -81,6 +82,13 @@ async def collect_prices(app: Application) -> None:
     )
 
 
+async def collect_and_report(app: Application) -> None:
+    logger.info("[collect_and_report] Starting combined collect+report job")
+    await collect_prices(app)
+    await send_group_report(app)
+    logger.info("[collect_and_report] Job complete")
+
+
 def setup_scheduler(app: Application, settings: Settings) -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler()
 
@@ -90,10 +98,10 @@ def setup_scheduler(app: Application, settings: Settings) -> AsyncIOScheduler:
             hour, minute = time_str.split(":")
             trigger = CronTrigger(hour=int(hour), minute=int(minute))
             scheduler.add_job(
-                collect_prices,
+                collect_and_report,
                 trigger,
                 args=[app],
-                id=f"collect_prices_{time_str}",
+                id=f"job_{time_str}",
             )
             logger.debug("[setup_scheduler] Registered job at %s", time_str)
         except (ValueError, AttributeError) as exc:
