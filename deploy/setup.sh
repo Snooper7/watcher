@@ -46,7 +46,7 @@ step 6 "Install Python dependencies"
 
 step 7 "Install Playwright browser (Chromium) as '$SERVICE_USER'"
 # Must run as the service user so the browser lands in its home dir (~/.cache/ms-playwright)
-sudo -u "$SERVICE_USER" "$INSTALL_DIR/venv/bin/playwright" install chromium --with-deps
+runuser -u "$SERVICE_USER" -- "$INSTALL_DIR/venv/bin/playwright" install chromium --with-deps
 
 step 8 "Create .env from .env.example"
 if [ ! -f "$INSTALL_DIR/.env" ]; then
