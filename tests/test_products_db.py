@@ -2,16 +2,21 @@ import logging
 
 import pytest
 
+from datetime import datetime, timezone
+
 import bot.database.db as db_module
 from bot.database.db import (
     add_product,
     get_or_create_user,
     get_product_by_id,
     init_db,
+    list_all_products_with_urls,
     list_products,
     remove_product,
+    save_price_record,
 )
-from bot.database.models import Base
+from bot.database.models import Base, Platform
+from bot.scrapers.base import ScrapedProduct
 
 logger = logging.getLogger(__name__)
 
@@ -132,5 +137,67 @@ def test_remove_product():
 
 
 def test_remove_product_not_found_no_error():
-    # Should log warning but not raise
     remove_product(99999)
+
+
+def test_list_all_products_with_urls_returns_only_those_with_url():
+    user = get_or_create_user(930, None)
+    p_wb = add_product(user.id, "WB Product", wb_url="https://wildberries.ru/catalog/1")
+    p_ozon = add_product(user.id, "Ozon Product", ozon_url="https://ozon.ru/product/1")
+    _p_none = add_product(user.id, "Plain Product")
+
+    results = list_all_products_with_urls()
+    ids = {p.id for p in results}
+    logger.debug("[test] list_all_products_with_urls ids=%s", ids)
+
+    assert p_wb.id in ids
+    assert p_ozon.id in ids
+    assert _p_none.id not in ids
+
+
+def test_list_all_products_with_urls_empty():
+    user = get_or_create_user(931, None)
+    add_product(user.id, "No URL Product")
+    results = list_all_products_with_urls()
+    assert results == []
+
+
+def test_save_price_record_creates_record():
+    user = get_or_create_user(940, None)
+    product = add_product(user.id, "Test Product", ozon_url="https://ozon.ru/product/1")
+
+    scraped = ScrapedProduct(
+        name="Test Product",
+        price=1299.0,
+        currency="RUB",
+        product_url="https://ozon.ru/product/1",
+        platform="ozon",
+        query="Test Product",
+        scraped_at=datetime.now(tz=timezone.utc),
+    )
+    record = save_price_record(product.id, scraped)
+    logger.debug("[test] PriceRecord id=%s price=%s platform=%s", record.id, record.price, record.platform)
+
+    assert record.id is not None
+    assert record.price == 1299.0
+    assert record.currency == "RUB"
+    assert record.platform == Platform.ozon
+
+
+def test_save_price_record_wb():
+    user = get_or_create_user(941, None)
+    product = add_product(user.id, "WB Product", wb_url="https://wildberries.ru/catalog/1")
+
+    scraped = ScrapedProduct(
+        name="WB Product",
+        price=799.0,
+        currency="RUB",
+        product_url="https://wildberries.ru/catalog/1",
+        platform="wb",
+        query="WB Product",
+        scraped_at=datetime.now(tz=timezone.utc),
+    )
+    record = save_price_record(product.id, scraped)
+
+    assert record.platform == Platform.wb
+    assert record.price == 799.0
