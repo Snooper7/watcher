@@ -44,9 +44,12 @@ step 6 "Install Python dependencies"
 "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pip
 "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
 
-step 7 "Install Playwright browser (Chromium) as '$SERVICE_USER'"
-# Must run as the service user so the browser lands in its home dir (~/.cache/ms-playwright)
-runuser -u "$SERVICE_USER" -- "$INSTALL_DIR/venv/bin/playwright" install chromium --with-deps
+step 7 "Install Playwright system dependencies (as root)"
+"$INSTALL_DIR/venv/bin/playwright" install-deps chromium
+
+step 7b "Install Playwright browser (Chromium) as '$SERVICE_USER'"
+# Run as service user so browser lands in its home dir (/opt/whatcher/.cache/ms-playwright)
+runuser -u "$SERVICE_USER" -- "$INSTALL_DIR/venv/bin/playwright" install chromium
 
 step 8 "Create .env from .env.example"
 if [ ! -f "$INSTALL_DIR/.env" ]; then
