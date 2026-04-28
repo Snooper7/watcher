@@ -9,8 +9,6 @@ from datetime import datetime, timezone
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError, async_playwright
 from playwright_stealth import Stealth
 
-from bot.database.db import get_session
-from bot.database.models import Platform, PriceRecord, Product
 from bot.scrapers.base import BaseScraper, ScrapedProduct
 
 logger = logging.getLogger(__name__)
@@ -367,26 +365,3 @@ class WbScraper(BaseScraper):
             return None
 
 
-def save_price_record(product_id: int, scraped: ScrapedProduct) -> PriceRecord:
-    logger.debug(
-        "[save_price_record] product_id=%d price=%s platform=%s",
-        product_id, scraped.price, scraped.platform,
-    )
-    with get_session() as session:
-        record = PriceRecord(
-            product_id=product_id,
-            platform=Platform.wb,
-            price=scraped.price,
-            currency=scraped.currency,
-        )
-        session.add(record)
-        session.flush()
-
-        product = session.get(Product, product_id)
-        if product is not None and not product.wb_url:
-            product.wb_url = scraped.product_url
-
-        logger.info(
-            "[save_price_record] Saved PriceRecord id=%s price=%s", record.id, record.price
-        )
-        return record

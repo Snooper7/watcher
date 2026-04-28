@@ -3,13 +3,12 @@ import os
 from contextlib import contextmanager
 from typing import Generator
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from sqlalchemy import select
-
-from bot.database.models import Base, Favorite, Product, User
+from bot.database.models import Base, Favorite, Platform, PriceRecord, Product, User
+from bot.scrapers.base import ScrapedProduct
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +151,51 @@ def remove_product(product_id: int) -> None:
         name = product.name
         session.delete(product)
         logger.info("[remove_product] deleted product id=%s name=%r", product_id, name)
+
+
+def list_all_products_with_urls() -> list[Product]:
+    with get_session() as session:
+        stmt = select(Product).where(
+            (Product.wb_url.is_not(None)) | (Product.ozon_url.is_not(None))
+        )
+        products = list(session.execute(stmt).scalars().all())
+        session.expunge_all()
+        logger.debug("[list_all_products_with_urls] count=%d", len(products))
+        return products
+
+
+def save_price_record(product_id: int, scraped: ScrapedProduct) -> PriceRecord:
+    platform = Platform.ozon if scraped.platform == "ozon" else Platform.wb
+    logger.debug(
+        "[save_price_record] product_id=%d price=%s platform=%s",
+        product_id, scraped.price, platform.value,
+    )
+    with get_session() as session:
+        record = PriceRecord(
+            product_id=product_id,
+            platform=platform,
+            price=scraped.price,
+            currency=scraped.currency,
+        )
+        session.add(record)
+        session.flush()
+
+        product = session.get(Product, product_id)
+        if product is not None:
+            if platform == Platform.ozon and not product.ozon_url:
+                product.ozon_url = scraped.product_url
+                logger.debug("[save_price_record] Updated ozon_url for product_id=%d", product_id)
+            elif platform == Platform.wb and not product.wb_url:
+                product.wb_url = scraped.product_url
+                logger.debug("[save_price_record] Updated wb_url for product_id=%d", product_id)
+
+        record_id = record.id
+        session.expunge(record)
+        logger.info(
+            "[save_price_record] Saved PriceRecord id=%s price=%s platform=%s",
+            record_id, scraped.price, platform.value,
+        )
+        return record
 
 
 def get_engine() -> Engine:
