@@ -38,7 +38,20 @@ def main() -> None:
         ])
         logger.info("[main] Bot commands menu updated")
 
+        from bot.scheduler import setup_scheduler
+        scheduler = setup_scheduler(application, settings)
+        application.bot_data["scheduler"] = scheduler
+        scheduler.start()
+        logger.info("[main] Scheduler started")
+
+    async def _post_shutdown(application: Application) -> None:
+        scheduler = application.bot_data.get("scheduler")
+        if scheduler is not None and scheduler.running:
+            scheduler.shutdown(wait=False)
+            logger.info("[main] Scheduler stopped")
+
     app.post_init = _post_init
+    app.post_shutdown = _post_shutdown
 
     logger.info("[main] Starting polling...")
     app.run_polling(drop_pending_updates=True)
