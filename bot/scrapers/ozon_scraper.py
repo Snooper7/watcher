@@ -512,6 +512,7 @@ class OzonScraper(BaseScraper):
                     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
                 ],
                 lang="ru-RU",
+                no_sandbox=True,
             )
             if chromium_path:
                 start_kwargs["browser_executable_path"] = chromium_path
