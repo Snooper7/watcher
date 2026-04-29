@@ -30,7 +30,7 @@ def _find_chromium_path() -> str | None:
         return env_path
 
     home = os.path.expanduser("~")
-    pattern = os.path.join(home, ".cache", "ms-playwright", "chromium-*", "chrome-linux", "chrome")
+    pattern = os.path.join(home, ".cache", "ms-playwright", "chromium-*", "chrome-linux*", "chrome")
     matches = glob.glob(pattern)
     if matches:
         path = sorted(matches)[-1]
