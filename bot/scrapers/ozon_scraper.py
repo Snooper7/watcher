@@ -502,8 +502,7 @@ class OzonScraper(BaseScraper):
         browser = None
         try:
             chromium_path = _find_chromium_path()
-            start_kwargs: dict = dict(
-                browser_args=[
+            browser_args = [
                     "--no-sandbox",
                     "--headless=new",
                     "--window-size=1920,1080",
@@ -511,7 +510,13 @@ class OzonScraper(BaseScraper):
                     "--disable-blink-features=AutomationControlled",
                     "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-                ],
+                ]
+            proxy = os.getenv("OZON_PROXY", "").strip()
+            if proxy:
+                browser_args.append(f"--proxy-server={proxy}")
+                logger.debug("[OzonScraper._run] Using proxy: %s", proxy)
+            start_kwargs: dict = dict(
+                browser_args=browser_args,
                 lang="ru-RU",
                 no_sandbox=True,
             )
