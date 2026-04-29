@@ -11,7 +11,9 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 [ -d "$INSTALL_DIR/.git" ] || die "Repository not found at $INSTALL_DIR. Run setup.sh first."
 
 echo "── Pulling latest changes ──"
-git -C "$INSTALL_DIR" -c safe.directory="$INSTALL_DIR" pull origin master
+BRANCH=$(git -C "$INSTALL_DIR" -c safe.directory="$INSTALL_DIR" rev-parse --abbrev-ref HEAD)
+git -C "$INSTALL_DIR" -c safe.directory="$INSTALL_DIR" fetch origin "$BRANCH"
+git -C "$INSTALL_DIR" -c safe.directory="$INSTALL_DIR" reset --hard "origin/$BRANCH"
 
 echo "── Installing Python dependencies ──"
 "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
