@@ -504,6 +504,7 @@ class OzonScraper(BaseScraper):
             chromium_path = _find_chromium_path()
             start_kwargs: dict = dict(
                 browser_args=[
+                    "--no-sandbox",
                     "--headless=new",
                     "--window-size=1920,1080",
                     "--lang=ru-RU",
