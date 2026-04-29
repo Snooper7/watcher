@@ -17,6 +17,5 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_KEY }}
           port: 22
-          script_stop: true
-          timeout: 120s
+          command_timeout: 120s
           script: bash /opt/whatcher/deploy/update.sh
