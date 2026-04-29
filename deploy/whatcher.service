@@ -18,9 +18,8 @@ SyslogIdentifier=whatcher
 # Hardening
 NoNewPrivileges=yes
 PrivateTmp=yes
-ProtectSystem=strict
-ReadWritePaths=/opt/whatcher/data /opt/whatcher/logs
-CapabilityBoundingSet=
+ProtectSystem=full
+ReadWritePaths=/opt/whatcher/data /opt/whatcher/logs /tmp /dev/shm
 
 [Install]
 WantedBy=multi-user.target
