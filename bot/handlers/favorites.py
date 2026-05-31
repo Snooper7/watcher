@@ -4,13 +4,13 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from bot.database.db import get_favorite_by_id, get_favorites
-from bot.scrapers.ozon_scraper import OzonScraper
+from bot.scrapers.factory import make_ozon_scraper
 from bot.scrapers.wb_scraper import WbScraper
 
 logger = logging.getLogger(__name__)
 
 _wb_scraper = WbScraper()
-_ozon_scraper = OzonScraper()
+_ozon_scraper = make_ozon_scraper()
 
 
 async def favorites_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

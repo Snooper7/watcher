@@ -11,7 +11,7 @@ from telegram.ext import (
 )
 
 from bot.database.db import save_favorite
-from bot.scrapers.ozon_scraper import OzonScraper
+from bot.scrapers.factory import make_ozon_scraper
 from bot.scrapers.wb_scraper import WbScraper
 
 logger = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 BRAND, FILTERS, SAVE_PROMPT = range(3)
 
 _wb_scraper = WbScraper()
-_ozon_scraper = OzonScraper()
+_ozon_scraper = make_ozon_scraper()
 
 _SAVE_KB = InlineKeyboardMarkup([[
     InlineKeyboardButton("✅ Сохранить", callback_data="fav_save"),
