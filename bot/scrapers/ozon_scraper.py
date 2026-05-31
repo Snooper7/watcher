@@ -58,6 +58,23 @@ try {
             ? Promise.resolve({ state: Notification.permission })
             : origQuery(p);
 } catch(e) {}
+try {
+    Object.defineProperty(navigator, 'languages', {get: () => ['ru-RU', 'ru', 'en-US', 'en']});
+} catch(e) {}
+try {
+    Object.defineProperty(navigator, 'plugins', {get: () => [
+        {name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format'},
+        {name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: ''},
+        {name: 'Native Client', filename: 'internal-nacl-plugin', description: ''},
+    ]});
+} catch(e) {}
+try {
+    Object.defineProperty(screen, 'colorDepth', {get: () => 24});
+} catch(e) {}
+try {
+    if (window.outerWidth === 0) Object.defineProperty(window, 'outerWidth', {get: () => 1920});
+    if (window.outerHeight === 0) Object.defineProperty(window, 'outerHeight', {get: () => 1080});
+} catch(e) {}
 """
 
 # Ozon uses tileGridDesktop on category pages, searchResultsV2 on plain search
@@ -460,6 +477,33 @@ def _cheapest(
     return min(valid, key=lambda p: p.price) if valid else None
 
 
+async def _scroll_to_load_prices(tab) -> None:
+    """Simulate real mouse-wheel scrolling via CDP to trigger Ozon's IntersectionObserver.
+
+    window.scrollTo() moves scrollY but never fires the browser-level scroll/wheel
+    events that Ozon's lazy price loader observes. CDP dispatchMouseEvent with
+    type=mouseWheel creates genuine events — prices appear reliably after this.
+    """
+    # Scroll down in steps, then back up so top tiles re-enter viewport
+    scroll_steps = [350, 350, 350, 350, 350, 350, -350, -350, -350, -350, -350, -350]
+    for delta in scroll_steps:
+        try:
+            await tab.send(cdp.input.dispatch_mouse_event(
+                type_="mouseWheel",
+                x=960,
+                y=540,
+                delta_x=0,
+                delta_y=delta,
+                modifiers=0,
+            ))
+        except Exception:
+            # Fallback: JS scrollBy if CDP call fails
+            await tab.evaluate(f"window.scrollBy(0, {delta})")
+        await asyncio.sleep(0.5)
+
+    logger.debug("[_scroll_to_load_prices] CDP scroll sequence complete")
+
+
 class OzonScraper(BaseScraper):
     platform = "ozon"
 
@@ -537,19 +581,13 @@ class OzonScraper(BaseScraper):
                 await _dump_html(tab, "ozon_search")
                 return None
 
-            # Multi-step scroll to trigger lazy-loaded prices in headless mode.
-            # Ozon renders the grid container early but populates price spans only
-            # after tiles enter the viewport via IntersectionObserver.
-            for scroll_y in (600, 1200, 1800):
-                await tab.evaluate(f"window.scrollTo(0, {scroll_y})")
-                await asyncio.sleep(1.2)
+            # CDP mouseWheel events trigger IntersectionObserver in headless mode.
+            # window.scrollTo() only moves scrollY but does not fire scroll events
+            # that Ozon's lazy-price loader listens for.
+            await _scroll_to_load_prices(tab)
 
-            # Scroll back to top so the first tiles are in view again
-            await tab.evaluate("window.scrollTo(0, 0)")
-            await asyncio.sleep(0.8)
-
-            # Wait until at least one price appears (up to 10 s)
-            prices_ready = await _wait_for_prices(tab, timeout=10.0)
+            # Wait until at least one price appears (up to 20 s)
+            prices_ready = await _wait_for_prices(tab, timeout=20.0)
             if not prices_ready:
                 logger.warning(
                     "[OzonScraper._run] Price spans never appeared in headless mode: url=%s", url
