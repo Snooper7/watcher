@@ -8,12 +8,12 @@ from telegram.ext import Application
 from bot.config import Settings
 from bot.database.db import list_all_products_with_urls, save_price_record
 from bot.reporter import send_group_report
-from bot.scrapers.ozon_scraper import OzonScraper
+from bot.scrapers.factory import make_ozon_scraper
 from bot.scrapers.wb_scraper import WbScraper
 
 logger = logging.getLogger(__name__)
 
-_ozon_scraper = OzonScraper()
+_ozon_scraper = make_ozon_scraper()
 _wb_scraper = WbScraper()
 
 

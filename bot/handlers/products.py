@@ -17,7 +17,7 @@ from bot.database.db import (
     list_products,
     remove_product,
 )
-from bot.scrapers.ozon_scraper import OzonScraper
+from bot.scrapers.factory import make_ozon_scraper
 from bot.scrapers.wb_scraper import WbScraper
 
 logger = logging.getLogger(__name__)
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 WAITING_BRAND, WAITING_URL, WAITING_CONFIRM = range(3)
 
 _wb_scraper = WbScraper()
-_ozon_scraper = OzonScraper()
+_ozon_scraper = make_ozon_scraper()
 
 
 def _detect_platform(text: str) -> tuple[str | None, str | None]:

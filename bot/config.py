@@ -16,12 +16,14 @@ class Settings:
         self.DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///data/whatcher.db")
         self.LOG_LEVEL: str = os.getenv("LOG_LEVEL", "DEBUG").upper()
         self.CHECK_TIMES: list[str] = os.getenv("CHECK_TIMES", "7:00,13:00,20:00").split(",")
+        self.OZON_SCRAPER_BACKEND: str = os.getenv("OZON_SCRAPER_BACKEND", "browser")
 
         logger.debug("[Settings.__init__] DATABASE_URL=%s", self.DATABASE_URL)
         logger.debug("[Settings.__init__] LOG_LEVEL=%s", self.LOG_LEVEL)
         logger.debug("[Settings.__init__] CHECK_TIMES=%s", self.CHECK_TIMES)
         logger.debug("[Settings.__init__] BOT_TOKEN=***%s", self.BOT_TOKEN[-4:])
         logger.debug("[Settings.__init__] GROUP_CHAT_ID=%s", self.GROUP_CHAT_ID)
+        logger.info("[Settings.__init__] OZON_SCRAPER_BACKEND=%s", self.OZON_SCRAPER_BACKEND)
 
         logger.info("[Settings.__init__] Configuration loaded successfully")
 
