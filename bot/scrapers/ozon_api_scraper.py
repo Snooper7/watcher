@@ -108,11 +108,11 @@ class OzonApiScraper(BaseScraper):
         return result
 
     async def _fetch_page(self, page_url: str) -> dict | None:
-        api_url = f"{_API_BASE}?url={urllib.parse.quote(page_url, safe='/?=&')}"
+        # safe includes '%' to avoid double-encoding already-encoded sequences (e.g. %3B → %253B)
+        api_url = f"{_API_BASE}?url={urllib.parse.quote(page_url, safe='/?=&%+')}"
         logger.debug("[OzonApiScraper._fetch_page] GET %s", api_url)
 
         proxy = os.getenv("OZON_PROXY", "").strip() or None
-        proxies = {"all://": proxy} if proxy else None
 
         for attempt in range(3):
             try:
@@ -120,7 +120,7 @@ class OzonApiScraper(BaseScraper):
                     headers=_HEADERS,
                     timeout=15.0,
                     follow_redirects=True,
-                    proxies=proxies,
+                    proxy=proxy,
                 ) as client:
                     resp = await client.get(api_url)
 
