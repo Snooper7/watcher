@@ -26,6 +26,13 @@ _HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
     "Referer": "https://www.ozon.ru/",
+    "x-o3-app-name": "ozonapp_web",
+    "x-o3-app-version": "6.58.0",
+    "x-o3-language": "RU",
+    "x-o3-timezone": "Europe/Moscow",
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-origin",
 }
 
 # Widget keys that contain product tile arrays
@@ -113,6 +120,8 @@ class OzonApiScraper(BaseScraper):
         logger.debug("[OzonApiScraper._fetch_page] GET %s", api_url)
 
         proxy = os.getenv("OZON_PROXY", "").strip() or None
+        if not proxy:
+            logger.warning("[OzonApiScraper._fetch_page] OZON_PROXY not set — datacenter IPs will likely get 403")
 
         for attempt in range(3):
             try:
